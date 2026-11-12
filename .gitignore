@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build files
+dist/
+build/
+
+# Test files
+test-results/
+playwright-report/
+
+# Environment secrets
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+
+# Android build files
+android/.gradle/
+android/build/
+android/app/build/
+
+# Local toolchain (bundled JDK — too large for GitHub)
+.tools/
