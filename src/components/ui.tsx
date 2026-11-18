@@ -475,20 +475,52 @@ export function Empty({
 
 /* -------------------------------------------------------------------- sheet */
 
+/*
+ * Multiple overlays can be open at once (a payment sheet inside a full-screen
+ * salary form). A plain save/restore of body.style.overflow breaks when they
+ * close in either order: the inner sheet can restore "hidden" from its parent,
+ * or the parent can unlock while the sheet is still open, and Android then
+ * refuses to scroll after the workflow ends. Reference-count the lock instead.
+ */
+let overlayLocks = 0;
+let bodyOverflowBeforeLocks = '';
+let bodyOverscrollBeforeLocks = '';
+
+function lockBodyScroll() {
+  if (overlayLocks === 0) {
+    bodyOverflowBeforeLocks = document.body.style.overflow;
+    bodyOverscrollBeforeLocks = document.body.style.overscrollBehavior;
+    document.body.style.overflow = 'hidden';
+    document.body.style.overscrollBehavior = 'none';
+  }
+  overlayLocks += 1;
+}
+
+function unlockBodyScroll() {
+  overlayLocks = Math.max(0, overlayLocks - 1);
+  if (overlayLocks === 0) {
+    document.body.style.overflow = bodyOverflowBeforeLocks;
+    document.body.style.overscrollBehavior = bodyOverscrollBeforeLocks;
+  }
+}
+
 function useOverlay(open: boolean, onClose: () => void) {
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    closeRef.current = onClose;
+  }, [onClose]);
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') closeRef.current();
     };
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    lockBodyScroll();
     window.addEventListener('keydown', onKey);
     return () => {
-      document.body.style.overflow = previous;
+      unlockBodyScroll();
       window.removeEventListener('keydown', onKey);
     };
-  }, [open, onClose]);
+  }, [open]);
 }
 
 function useBackCloser(active: boolean, onClose: () => void) {

@@ -6,12 +6,13 @@
  * user already tracks are scheduled, and the same event is never queued twice.
  */
 import type { AppState } from './types';
-import { upcomingItems } from './calc';
+import { addDays, todayISO, upcomingItems } from './calc';
 import { formatMoney } from './money';
+import { nextReminderDate, reminderAt, reminderCategoryLabel } from './reminders';
 
 interface NotifyBridge {
   post(id: number, title: string, body: string): void;
-  schedule(id: number, title: string, body: string, at: number): void;
+  schedule(id: number, title: string, body: string, at: number, repeatMillis?: number): void;
   cancel(id: number): void;
 }
 
@@ -75,7 +76,7 @@ export function syncDeviceReminders(state: AppState): void {
 
   const now = Date.now();
   const lead = Math.max(0, state.settings.remindDays);
-  const wanted = new Map<string, { id: number; title: string; body: string; at: number }>();
+  const wanted = new Map<string, { id: number; title: string; body: string; at: number; repeatMillis?: number }>();
 
   for (const item of upcomingItems(state).slice(0, 40)) {
     const due = new Date(`${item.dueDate}T09:00:00`);
@@ -93,6 +94,33 @@ export function syncDeviceReminders(state: AppState): void {
     });
   }
 
+  for (const reminder of state.reminders ?? []) {
+    if (!reminder.active || reminder.notify !== 'device' || !reminder.date) continue;
+    let date = nextReminderDate(reminder, todayISO());
+    if (!date) continue;
+    let at = reminderAt(reminder, date) ?? 0;
+    if (at <= now + 30_000 && reminder.repeat !== 'once') {
+      date = nextReminderDate(reminder, addDays(todayISO(), 1));
+      at = reminderAt(reminder, date) ?? 0;
+    }
+    if (at <= now + 30_000) continue;
+    const key = `reminder:${reminder.id}`;
+    const repeatMillis = reminder.repeat === 'daily'
+      ? 86_400_000
+      : reminder.repeat === 'weekly'
+        ? 604_800_000
+        : reminder.repeat === 'monthly'
+          ? -1
+          : 0;
+    wanted.set(key, {
+      id: hashId(key),
+      title: reminder.title,
+      body: `${reminderCategoryLabel(reminder.category)}${reminder.amount != null ? ` · ${formatMoney(reminder.amount, reminder.currency ?? state.settings.currency)}` : ''}`,
+      at,
+      repeatMillis,
+    });
+  }
+
   const previous = readScheduled();
   for (const key of previous) {
     if (!wanted.has(key)) {
@@ -107,7 +135,7 @@ export function syncDeviceReminders(state: AppState): void {
   for (const reminder of wanted.values()) {
     try {
       host.cancel(reminder.id);
-      host.schedule(reminder.id, reminder.title, reminder.body, reminder.at);
+      host.schedule(reminder.id, reminder.title, reminder.body, reminder.at, reminder.repeatMillis);
     } catch {
       /* ignore individual scheduling failures */
     }

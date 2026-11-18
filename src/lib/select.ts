@@ -11,6 +11,7 @@ import {
   generateSchedule,
   goalBalance,
   isFlexibleLoan,
+  loanOutstanding,
   monthEnd,
   monthStart,
   salaryNet,
@@ -20,10 +21,11 @@ import {
 } from './calc';
 import { monthKey } from './calc';
 import { formatMoney } from './money';
+import { nextReminderDate, reminderCategoryLabel } from './reminders';
 
 export interface NotificationItem {
   key: string;
-  kind: 'salary' | 'emi' | 'bill' | 'budget' | 'savings' | 'sms';
+  kind: 'salary' | 'emi' | 'bill' | 'budget' | 'savings' | 'sms' | 'reminder';
   title: string;
   body: string;
   date: string;
@@ -86,6 +88,29 @@ export function buildNotifications(state: AppState): NotificationItem[] {
           link: `#/loans/${loan.id}`,
           urgency: status === 'overdue' ? 'danger' : 'warning',
         });
+      }
+
+      // Gold pawning matures on a specific redemption date. Notify on the
+      // standard 30/15/7/3-day ladder, on maturity, and after it passes.
+      if (loan.category === 'gold' && loan.promisedDate) {
+        const left = daysBetween(today, loan.promisedDate);
+        if (left <= 30) {
+          const milestone = left < 0 ? -1 : left <= 3 ? 3 : left <= 7 ? 7 : left <= 15 ? 15 : 30;
+          const outstanding = loanOutstanding(loan, state.emiPayments);
+          out.push({
+            key: `gold-maturity:${loan.id}:${milestone}`,
+            kind: 'emi',
+            title: left < 0
+              ? 'Gold pawn overdue for redemption'
+              : left === 0
+                ? 'Gold pawn matures today'
+                : `Gold pawn matures in ${left} day${left === 1 ? '' : 's'}`,
+            body: `${loan.name} · ${money(outstanding, loan.currency)} outstanding · redeem by ${loan.promisedDate}`,
+            date: loan.promisedDate,
+            link: `#/loans/${loan.id}`,
+            urgency: left <= 3 ? 'danger' : 'warning',
+          });
+        }
       }
     }
   }
@@ -163,6 +188,28 @@ export function buildNotifications(state: AppState): NotificationItem[] {
     }
   }
 
+  for (const reminder of state.reminders ?? []) {
+    if (!reminder.active) continue;
+    const date = nextReminderDate(reminder, today);
+    if (!date) continue;
+    if (date > addDays(today, Math.max(days, 0))) continue;
+    const overdue = reminder.repeat === 'once' && date < today;
+    const body = [
+      reminderCategoryLabel(reminder.category),
+      reminder.amount != null ? money(reminder.amount, reminder.currency ?? state.settings.currency) : null,
+      reminder.time ? `at ${reminder.time}` : null,
+    ].filter(Boolean).join(' · ');
+    out.push({
+      key: `reminder:${reminder.id}`,
+      kind: 'reminder',
+      title: reminder.title,
+      body,
+      date,
+      link: '#/reminders',
+      urgency: overdue ? 'danger' : 'info',
+    });
+  }
+
   for (const draft of state.smsDrafts) {
     if (draft.status !== 'pending') continue;
     out.push({
@@ -177,6 +224,12 @@ export function buildNotifications(state: AppState): NotificationItem[] {
   }
 
   return out.sort((a, b) => b.date.localeCompare(a.date));
+}
+
+/** Notifications still visible after individual deletes and "clear all". */
+export function visibleNotifications(state: AppState): NotificationItem[] {
+  const deleted = new Set(state.deletedNotifKeys ?? []);
+  return buildNotifications(state).filter((item) => !deleted.has(item.key));
 }
 
 /* ----------------------------------------------------------------- search */
@@ -280,6 +333,28 @@ export function globalSearch(state: AppState, term: string): SearchGroup[] {
       link: `#/insights?category=${encodeURIComponent(c as string)}`,
     }));
   if (categories.length) groups.push({ type: 'category', label: 'Categories', items: categories });
+
+  const reminders = state.reminders
+    .filter((r) => hit(r.title, r.description, reminderCategoryLabel(r.category)))
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      subtitle: `${reminderCategoryLabel(r.category)} · ${r.date} ${r.time}`,
+      amount: r.amount != null ? money(r.amount, r.currency ?? state.settings.currency) : undefined,
+      link: '#/reminders',
+    }));
+  if (reminders.length) groups.push({ type: 'reminder', label: 'Reminders', items: reminders });
+
+  const notifications = visibleNotifications(state)
+    .filter((n) => hit(n.title, n.body))
+    .slice(0, 12)
+    .map((n) => ({
+      id: n.key,
+      title: n.title,
+      subtitle: n.body,
+      link: n.link,
+    }));
+  if (notifications.length) groups.push({ type: 'notification', label: 'Notifications', items: notifications });
 
   return groups;
 }

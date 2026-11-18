@@ -1,9 +1,6 @@
 import type { Account } from './types';
-import { formatMoney } from './money';
 
 export interface AccountShareOptions {
-  balance: number;
-  includeBalance: boolean;
   logo?: string;
 }
 
@@ -12,42 +9,44 @@ function gradientColors(account: Account): [string, string] {
   return [found[0] ?? '#0e9f78', found[1] ?? '#0b7d78'];
 }
 
-function masked(account: Account): string {
-  if (!account.identifier) return '';
-  const clean = account.identifier.replace(/\s+/g, '');
-  return clean.length <= 4 ? `•••• ${clean}` : `•••• ${clean.slice(-4)}`;
+/** The only fields Finora may expose when sharing account identity. */
+export function shareFields(account: Account): { label: string; value: string }[] {
+  const four = account.lastFour || (account.identifier ?? '').replace(/\D/g, '').slice(-4);
+  switch (account.kind) {
+    case 'bank':
+      return [
+        { label: 'Account holder', value: account.holderName || account.name },
+        { label: 'Bank', value: account.bankName ?? '' },
+        { label: 'Branch', value: account.branch ?? '' },
+        { label: 'Account number', value: account.identifier ?? '' },
+      ].filter((field) => field.value.trim());
+    case 'wallet':
+      return [
+        { label: 'Wallet holder', value: account.holderName || account.name },
+        { label: 'Wallet provider', value: account.provider || account.bankName || '' },
+        { label: 'Wallet ID', value: account.walletId || account.identifier || '' },
+      ].filter((field) => field.value.trim());
+    case 'credit':
+      return [
+        { label: 'Cardholder', value: account.holderName || account.name },
+        { label: 'Card provider', value: account.provider || account.bankName || '' },
+        { label: 'Card type', value: account.cardType ?? '' },
+        { label: 'Last four digits', value: four },
+      ].filter((field) => field.value.trim());
+    case 'cash':
+      return [{ label: 'Cash account', value: account.name }];
+    default:
+      return [
+        { label: 'Account', value: account.name },
+        { label: 'Type', value: account.accountType ?? '' },
+        { label: 'Provider', value: account.provider ?? '' },
+        { label: 'Reference', value: account.referenceNumber ?? '' },
+      ].filter((field) => field.value.trim());
+  }
 }
 
-export function accountShareText(account: Account, options: AccountShareOptions): string {
-  const lines = [account.name];
-  if (account.bankName) lines.push(`Bank: ${account.bankName}`);
-  if (account.branch) lines.push(`Branch: ${account.branch}`);
-  if (account.identifier) lines.push(`Account: ${masked(account)}`);
-  lines.push(`Type: ${account.kind} · ${account.currency}`);
-  lines.push(
-    options.includeBalance
-      ? `Balance: ${formatMoney(options.balance, account.currency)}`
-      : 'Balance: hidden',
-  );
-  lines.push('', 'Shared from Finora — Your money, clearly managed.');
-  return lines.join('\n');
-}
-
-function roundedRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number,
-) {
-  ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.arcTo(x + width, y, x + width, y + height, radius);
-  ctx.arcTo(x + width, y + height, x, y + height, radius);
-  ctx.arcTo(x, y + height, x, y, radius);
-  ctx.arcTo(x, y, x + width, y, radius);
-  ctx.closePath();
+export function accountShareText(account: Account): string {
+  return shareFields(account).map((field) => `${field.label}: ${field.value}`).join('\n');
 }
 
 function loadImage(src: string): Promise<HTMLImageElement | null> {
@@ -76,6 +75,8 @@ export async function accountCardBlob(account: Account, options: AccountShareOpt
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, width, height);
 
+  const fields = shareFields(account);
+
   ctx.fillStyle = 'rgba(255,255,255,0.07)';
   ctx.beginPath();
   ctx.arc(width - 90, -40, 260, 0, Math.PI * 2);
@@ -85,7 +86,6 @@ export async function accountCardBlob(account: Account, options: AccountShareOpt
   ctx.fill();
 
   const sans = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
-  const mono = "'SFMono-Regular', Consolas, 'Liberation Mono', monospace";
 
   ctx.fillStyle = 'rgba(255,255,255,0.9)';
   ctx.font = `700 24px ${sans}`;
@@ -94,7 +94,7 @@ export async function accountCardBlob(account: Account, options: AccountShareOpt
   ctx.fillStyle = 'rgba(255,255,255,0.65)';
   ctx.font = `600 20px ${sans}`;
   ctx.textAlign = 'right';
-  ctx.fillText('ACCOUNT CARD', width - 64, 82);
+  ctx.fillText('ACCOUNT DETAILS', width - 64, 82);
   ctx.textAlign = 'left';
 
   const logo = options.logo ? await loadImage(options.logo) : null;
@@ -119,47 +119,25 @@ export async function accountCardBlob(account: Account, options: AccountShareOpt
     ctx.textAlign = 'left';
   }
 
-  ctx.fillStyle = '#ffffff';
-  ctx.font = `700 54px ${sans}`;
-  const displayName = account.name.length > 26 ? `${account.name.slice(0, 25)}…` : account.name;
-  ctx.fillText(displayName, 64, 300);
-
-  ctx.fillStyle = 'rgba(255,255,255,0.82)';
-  ctx.font = `400 28px ${sans}`;
-  const bankLine = [account.bankName || 'Account', account.branch].filter(Boolean).join(' · ');
-  ctx.fillText(bankLine.length > 54 ? `${bankLine.slice(0, 53)}…` : bankLine, 64, 354);
-
-  ctx.fillStyle = 'rgba(255,255,255,0.95)';
-  ctx.font = `600 34px ${mono}`;
-  ctx.fillText(masked(account) || `${account.kind} account`, 64, 414);
-
-  ctx.fillStyle = 'rgba(0,0,0,0.18)';
-  roundedRect(ctx, 64, 462, width - 128, 128, 22);
-  ctx.fill();
-
-  ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.font = `600 20px ${sans}`;
-  ctx.fillText('CURRENT BALANCE', 96, 506);
-
-  ctx.fillStyle = '#ffffff';
-  ctx.font = `700 52px ${sans}`;
-  ctx.fillText(
-    options.includeBalance ? formatMoney(options.balance, account.currency) : '••••••',
-    96,
-    563,
-  );
-
-  ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.font = `400 20px ${sans}`;
-  ctx.textAlign = 'right';
-  ctx.fillText(account.currency, width - 96, 563);
-  ctx.textAlign = 'left';
+  // Share only identity fields. No balances, limits, dates or currency totals.
+  fields.slice(0, 4).forEach((field, index) => {
+    const top = 205 + index * 92;
+    ctx.fillStyle = 'rgba(255,255,255,0.64)';
+    ctx.font = `600 17px ${sans}`;
+    ctx.fillText(field.label.toUpperCase(), 64, top);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `600 ${index === 0 ? 34 : 27}px ${sans}`;
+    const maxWidth = width - 128;
+    let value = field.value;
+    while (value.length > 3 && ctx.measureText(value).width > maxWidth) value = `${value.slice(0, -2)}…`;
+    ctx.fillText(value, 64, top + 35);
+  });
 
   ctx.fillStyle = 'rgba(255,255,255,0.66)';
   ctx.font = `400 19px ${sans}`;
   ctx.fillText('Your money, clearly managed.', 64, 626);
   ctx.textAlign = 'right';
-  ctx.fillText(new Date().toLocaleDateString(), width - 64, 626);
+  ctx.fillText('Shared from Finora', width - 64, 626);
   ctx.textAlign = 'left';
 
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));

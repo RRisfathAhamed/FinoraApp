@@ -31,6 +31,7 @@ function countRecords(state: AppState): Record<string, number> {
     documents: state.documents.length,
     media: Object.keys(state.media).length,
     smsDrafts: state.smsDrafts.length,
+    reminders: state.reminders.length,
   };
 }
 
@@ -229,7 +230,9 @@ export function clearAllFinancialData(state: AppState): { state: AppState; remov
     documents: [],
     media: keepMedia,
     smsDrafts: [],
+    reminders: [],
     readNotifKeys: [],
+    deletedNotifKeys: [],
     recentSearches: [],
   };
   return { state: next, removed };

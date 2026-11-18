@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import {
   ArrowLeftRight,
   ChevronRight,
+  Copy,
   Download,
   Landmark,
   Pencil,
@@ -23,7 +24,7 @@ import { linkedDocuments as linkedDocs } from '../lib/select';
 import { formatMoney } from '../lib/money';
 import { actions } from '../lib/store';
 import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '../lib/categories';
-import { compressImage, dataUrlToBlob, downloadBlob, type FilePayload } from '../lib/files';
+import { dataUrlToBlob, downloadBlob, extFor, type FilePayload } from '../lib/files';
 import { ImageCropper } from '../components/ImageCropper';
 import { toast } from '../lib/toast';
 import {
@@ -43,16 +44,16 @@ import {
   Select,
   Sheet,
   Textarea,
-  Toggle,
 } from '../components/ui';
 import {
   accountCardBlob,
   accountCardFilename,
   accountShareText,
-  copyText,
 } from '../lib/share';
-import { shareOrDownload } from '../lib/files';
-import { AccountIcon, AccountTile, Money, TxnRow, accountGradient } from '../components/bits';
+import { shareOrCopyText, shareOrDownload } from '../lib/files';
+import { AccountIcon, Money, TxnRow, accountGradient } from '../components/bits';
+import { commitRecordAttachments, RecordAttachments } from '../components/RecordAttachments';
+import { AccountCarousel } from '../components/AccountCarousel';
 
 const CARD_COLORS = [
   'linear-gradient(135deg,#0e9f78,#0b7d78)',
@@ -117,22 +118,12 @@ export function MoneyScreen() {
       {tab === 'accounts' ? (
         <>
           {active.length ? (
-            <div className="account-scroll">
-              {active.map((account, index) => (
-                <AccountTile
-                  key={account.id}
-                  account={account}
-                  balance={balances.get(account.id) ?? 0}
-                  index={index}
-                  hide={hide}
-                  onClick={() => navigate(`/money/account/${account.id}`)}
-                />
-              ))}
-              <button className="account-card account-card--add" onClick={() => navigate('/money/account/new')}>
-                <Plus size={20} />
-                Add account
-              </button>
-            </div>
+            <AccountCarousel
+              accounts={active}
+              balances={balances}
+              hide={hide}
+              onAdd={() => navigate('/money/account/new')}
+            />
           ) : null}
 
           {active.length ? (
@@ -149,7 +140,7 @@ export function MoneyScreen() {
                     <span className="list-row__sub">
                       {account.bankName ? `${account.bankName} · ` : ''}
                       {account.kind} · {account.currency}
-                      {account.identifier ? ` · •• ${account.identifier}` : ''}
+                      {account.identifier ? ` · •••• ${account.identifier.slice(-4)}` : ''}
                     </span>
                   </span>
                   <span className="list-row__trail">
@@ -285,6 +276,18 @@ export function AccountForm({ accountId }: { accountId?: string }) {
   const [opening, setOpening] = useState(existing?.openingBalance ?? 0);
   const [color, setColor] = useState(existing?.color ?? CARD_COLORS[0]);
   const [notes, setNotes] = useState(existing?.notes ?? '');
+  const [holderName, setHolderName] = useState(existing?.holderName ?? '');
+  const [accountType, setAccountType] = useState(existing?.accountType ?? (existing?.kind === 'other' ? '' : 'savings'));
+  const [provider, setProvider] = useState(existing?.provider ?? '');
+  const [walletId, setWalletId] = useState(existing?.walletId ?? '');
+  const [cardType, setCardType] = useState(existing?.cardType ?? '');
+  const [lastFour, setLastFour] = useState(existing?.lastFour ?? (existing?.kind === 'credit' ? existing?.identifier ?? '' : ''));
+  const [creditLimit, setCreditLimit] = useState(existing?.creditLimit ?? 0);
+  const [availableCredit, setAvailableCredit] = useState(existing?.availableCredit ?? 0);
+  const [billingDate, setBillingDate] = useState(existing?.billingDate ?? '');
+  const [paymentDueDate, setPaymentDueDate] = useState(existing?.paymentDueDate ?? '');
+  const [referenceNumber, setReferenceNumber] = useState(existing?.referenceNumber ?? '');
+  const currentBalance = existing ? accountBalances(state).get(existing.id) ?? existing.openingBalance : opening;
   const [image, setImage] = useState<FilePayload | null>(null);
   const [removeImage, setRemoveImage] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -311,9 +314,36 @@ export function AccountForm({ accountId }: { accountId?: string }) {
 
   const submit = () => {
     setError('');
-    if (!name.trim()) {
-      setError('Account name is required.');
+    const displayName = name.trim() || holderName.trim() || (kind === 'cash' ? 'Cash' : '') || provider.trim();
+    if (!displayName) {
+      setError('Give this account a name or enter the holder/provider name.');
       return;
+    }
+    if (kind === 'bank') {
+      if (!holderName.trim()) { setError('Account holder name is required.'); return; }
+      if (!bankName.trim()) { setError('Bank name is required.'); return; }
+      if (!accountType) { setError('Choose savings or current account.'); return; }
+      if (!branch.trim()) { setError('Bank branch is required.'); return; }
+      if (!identifier.trim()) { setError('Account number is required.'); return; }
+    }
+    if (kind === 'wallet') {
+      if (!holderName.trim()) { setError('Wallet holder name is required.'); return; }
+      if (!provider.trim()) { setError('Wallet provider is required.'); return; }
+      if (!walletId.trim()) { setError('Wallet ID or mobile number is required.'); return; }
+    }
+    if (kind === 'credit') {
+      if (!holderName.trim()) { setError('Cardholder name is required.'); return; }
+      if (!provider.trim()) { setError('Bank or card provider is required.'); return; }
+      if (!cardType.trim()) { setError('Choose a card type.'); return; }
+      if (!/^\d{4}$/.test(lastFour.trim())) { setError('Enter the last four card digits.'); return; }
+      if (creditLimit <= 0) { setError('Enter a credit limit greater than zero.'); return; }
+      if (availableCredit < 0 || availableCredit > creditLimit) { setError('Available credit must be between zero and the credit limit.'); return; }
+      if (!billingDate) { setError('Billing date is required.'); return; }
+      if (!paymentDueDate) { setError('Payment due date is required.'); return; }
+    }
+    if (kind === 'other') {
+      if (!accountType.trim()) { setError('Account type is required.'); return; }
+      if (!provider.trim()) { setError('Provider or institution name is required.'); return; }
     }
     setBusy(true);
     try {
@@ -324,11 +354,22 @@ export function AccountForm({ accountId }: { accountId?: string }) {
         imageId = actions.media.add({ name: image.name, mime: image.mime, size: image.size, dataUrl: image.dataUrl });
       }
       const payload = {
-        name: name.trim(),
-        bankName: bankName.trim() || undefined,
-        branch: branch.trim() || undefined,
+        name: displayName,
         kind,
-        identifier: identifier.trim() || undefined,
+        holderName: kind === 'bank' || kind === 'wallet' || kind === 'credit' ? holderName.trim() : undefined,
+        bankName: kind === 'bank' ? bankName.trim() : undefined,
+        branch: kind === 'bank' ? branch.trim() : undefined,
+        accountType: kind === 'bank' || kind === 'other' ? accountType.trim() : undefined,
+        provider: kind === 'wallet' || kind === 'credit' || kind === 'other' ? provider.trim() : undefined,
+        walletId: kind === 'wallet' ? walletId.trim() : undefined,
+        cardType: kind === 'credit' ? cardType.trim() : undefined,
+        lastFour: kind === 'credit' ? lastFour.trim() : undefined,
+        creditLimit: kind === 'credit' ? creditLimit : undefined,
+        availableCredit: kind === 'credit' ? availableCredit : undefined,
+        billingDate: kind === 'credit' ? billingDate : undefined,
+        paymentDueDate: kind === 'credit' ? paymentDueDate : undefined,
+        referenceNumber: kind === 'other' ? referenceNumber.trim() || undefined : undefined,
+        identifier: kind === 'bank' ? identifier.trim() : kind === 'wallet' ? walletId.trim() : kind === 'credit' ? lastFour.trim() : undefined,
         currency,
         openingBalance: hasHistory ? existing?.openingBalance ?? 0 : opening,
         color,
@@ -360,39 +401,107 @@ export function AccountForm({ accountId }: { accountId?: string }) {
       <div className="form-stack">
         {error ? <div className="form-error" role="alert">{error}</div> : null}
 
-        <Field label="Account name">
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Salary account" autoFocus />
+        <Field label="Account name" hint="Optional nickname used in lists. We will use the holder or provider name if blank.">
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={kind === 'bank' ? 'e.g. Salary account' : 'e.g. Daily cash'} autoFocus />
         </Field>
 
-        <div className="row">
-          <Field label="Account type">
-            <Select value={kind} onChange={(e) => setKind(e.target.value as Account['kind'])}>
-              {ACCOUNT_KINDS.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
-            </Select>
-          </Field>
-          <Field label="Bank name">
-            <Input value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="Optional" />
-          </Field>
-        </div>
+        <Field label="Account category *">
+          <Select
+            value={kind}
+            onChange={(e) => {
+              const next = e.target.value as Account['kind'];
+              setKind(next);
+              if (next === 'bank' && accountType !== 'savings' && accountType !== 'current') setAccountType('savings');
+              if (next === 'other' && accountType === 'savings') setAccountType('');
+              setError('');
+            }}
+          >
+            {ACCOUNT_KINDS.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
+          </Select>
+        </Field>
 
-        <div className="row">
-          <Field label="Bank branch">
-            <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="e.g. Colombo 03" />
-          </Field>
-          <Field label="Masked identifier" hint="Last digits only">
-            <Input value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="e.g. 4821" inputMode="numeric" />
-          </Field>
-        </div>
+        {kind === 'bank' ? (
+          <>
+            <div className="row">
+              <Field label="Account holder name *"><Input value={holderName} onChange={(e) => setHolderName(e.target.value)} placeholder="Full name" autoComplete="name" /></Field>
+              <Field label="Bank name *"><Input value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="e.g. Commercial Bank" /></Field>
+            </div>
+            <div className="row">
+              <Field label="Account type *">
+                <Select value={accountType || 'savings'} onChange={(e) => setAccountType(e.target.value)}>
+                  <option value="savings">Savings account</option>
+                  <option value="current">Current account</option>
+                </Select>
+              </Field>
+              <Field label="Bank branch *"><Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="e.g. Colombo 03" /></Field>
+            </div>
+            <Field label="Account number *" hint="Used only when you explicitly share account details.">
+              <Input value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="e.g. 0123456789" inputMode="numeric" autoComplete="off" />
+            </Field>
+          </>
+        ) : null}
+
+        {kind === 'cash' ? (
+          <div className="form-note">Cash uses the opening balance plus recorded movements to calculate its current balance. No bank details are needed.</div>
+        ) : null}
+
+        {kind === 'wallet' ? (
+          <>
+            <div className="row">
+              <Field label="Wallet holder name *"><Input value={holderName} onChange={(e) => setHolderName(e.target.value)} placeholder="Full name" autoComplete="name" /></Field>
+              <Field label="Wallet provider *"><Input value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="e.g. PayPal, eZ Cash" /></Field>
+            </div>
+            <Field label="Wallet ID / mobile number *">
+              <Input value={walletId} onChange={(e) => setWalletId(e.target.value)} placeholder="e.g. 0771234567" inputMode="tel" autoComplete="off" />
+            </Field>
+          </>
+        ) : null}
+
+        {kind === 'credit' ? (
+          <>
+            <div className="row">
+              <Field label="Cardholder name *"><Input value={holderName} onChange={(e) => setHolderName(e.target.value)} placeholder="Full name" autoComplete="name" /></Field>
+              <Field label="Bank / card provider *"><Input value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="e.g. Visa via HNB" /></Field>
+            </div>
+            <div className="row">
+              <Field label="Card type *"><Input value={cardType} onChange={(e) => setCardType(e.target.value)} placeholder="e.g. Visa, Mastercard" /></Field>
+              <Field label="Last four digits *"><Input value={lastFour} onChange={(e) => setLastFour(e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="1234" inputMode="numeric" maxLength={4} autoComplete="off" /></Field>
+            </div>
+            <div className="row">
+              <MoneyField label="Credit limit *" value={creditLimit} currency={currency} onChange={setCreditLimit} />
+              <MoneyField label="Available credit *" value={availableCredit} currency={currency} onChange={setAvailableCredit} />
+            </div>
+            <div className="row">
+              <Field label="Billing date *"><Input type="date" value={billingDate} onChange={(e) => setBillingDate(e.target.value)} /></Field>
+              <Field label="Payment due date *"><Input type="date" value={paymentDueDate} onChange={(e) => setPaymentDueDate(e.target.value)} /></Field>
+            </div>
+            <div className="form-note">Never enter a CVV, PIN or full card number. Finora stores only the last four digits and never requests those details.</div>
+          </>
+        ) : null}
+
+        {kind === 'other' ? (
+          <>
+            <div className="row">
+              <Field label="Account type *"><Input value={accountType} onChange={(e) => setAccountType(e.target.value)} placeholder="e.g. Investment, Receivable" /></Field>
+              <Field label="Provider / institution *"><Input value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="e.g. Broker or employer" /></Field>
+            </div>
+            <Field label="Reference number (optional)"><Input value={referenceNumber} onChange={(e) => setReferenceNumber(e.target.value)} placeholder="Policy, contract or reference" autoComplete="off" /></Field>
+          </>
+        ) : null}
+
         <CurrencySelect value={currency} onChange={setCurrency} disabled={hasHistory} />
 
         <MoneyField
-          label="Opening balance"
+          label={kind === 'cash' || kind === 'other' ? 'Opening balance' : 'Opening balance / available balance'}
           value={opening}
           currency={currency}
           onChange={setOpening}
-          hint={hasHistory ? 'Locked because this account already has movements. Use reconciliation instead.' : 'Cash already in this account. Never counted as income.'}
+          hint={hasHistory ? 'Locked because this account already has movements. Use reconciliation instead.' : 'Money already in this account. Never counted as income.'}
           autoFocus={false}
         />
+        <div className="form-note">
+          Current calculated balance: <strong>{formatMoney(currentBalance, currency, { hide: state.settings.hideBalances })}</strong>. It updates automatically as you add income, expenses and transfers.
+        </div>
         {hasHistory ? <div className="form-note">Opening balance is locked to protect your income reports and net worth. Use <strong>Reconcile</strong> on the account to correct the current balance.</div> : null}
 
         <div className="field">
@@ -478,9 +587,10 @@ export function AccountForm({ accountId }: { accountId?: string }) {
             <Btn variant="soft" onClick={() => setArchiveOpen(true)}>
               {existing.archived ? 'Restore account' : 'Archive account'}
             </Btn>
-            <Btn variant="ghost" onClick={() => setDeleteOpen(true)} icon={<Trash2 size={16} />}>
+            <Btn variant="ghost" onClick={() => setDeleteOpen(true)} icon={<Trash2 size={16} />} disabled={hasHistory}>
               Delete account
             </Btn>
+            {hasHistory ? <p className="hint">This account has movements and cannot be deleted. Archive it to keep reports intact.</p> : null}
             <p className="hint">Archived accounts are hidden from totals and transfers but keep their history. Deletion is only allowed when no movements exist.</p>
           </div>
         ) : null}
@@ -514,10 +624,15 @@ export function AccountForm({ accountId }: { accountId?: string }) {
         confirmLabel="Delete"
         onConfirm={() => {
           if (!existing) return;
-          actions.account.remove(existing.id);
-          setDeleteOpen(false);
-          toast('Account deleted');
-          goBack('/money');
+          try {
+            actions.account.remove(existing.id);
+            setDeleteOpen(false);
+            toast('Account deleted');
+            goBack('/money');
+          } catch (error) {
+            setDeleteOpen(false);
+            toast((error as Error).message, 'error');
+          }
         }}
       />
     </FullForm>
@@ -533,10 +648,10 @@ export function AccountDetail({ accountId }: { accountId: string }) {
   const [reconcileOpen, setReconcileOpen] = useState(false);
   const [actual, setActual] = useState(0);
   const [reconcileDate, setReconcileDate] = useState(todayISO());
+  const [reconcileAttachments, setReconcileAttachments] = useState<FilePayload[]>([]);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
-  const [includeBalance, setIncludeBalance] = useState(false);
   const [cardPreview, setCardPreview] = useState('');
   const [sharing, setSharing] = useState(false);
   const hide = state.settings.hideBalances;
@@ -557,9 +672,9 @@ export function AccountDetail({ accountId }: { accountId: string }) {
   const image = account.imageId ? state.media[account.imageId]?.dataUrl : undefined;
   const hasHistory = accountTxns.length > 0;
 
-  const renderCard = async (withBalance: boolean) => {
+  const renderCard = async () => {
     try {
-      const blob = await accountCardBlob(account, { balance, includeBalance: withBalance, logo: image });
+      const blob = await accountCardBlob(account, { logo: image });
       setCardPreview((previous) => {
         if (previous) URL.revokeObjectURL(previous);
         return URL.createObjectURL(blob);
@@ -571,16 +686,15 @@ export function AccountDetail({ accountId }: { accountId: string }) {
 
   const openShare = () => {
     setShareOpen(true);
-    setIncludeBalance(false);
-    void renderCard(false);
+    void renderCard();
   };
 
   const shareCard = async () => {
     setSharing(true);
     try {
-      const blob = await accountCardBlob(account, { balance, includeBalance, logo: image });
+      const blob = await accountCardBlob(account, { logo: image });
       const outcome = await shareOrDownload(accountCardFilename(account), blob);
-      toast(outcome === 'shared' ? 'Account card shared' : 'Account card downloaded');
+      toast(outcome === 'shared' ? 'Account details card shared' : 'Account details card downloaded');
     } catch (error) {
       if ((error as Error).name !== 'AbortError') toast((error as Error).message, 'error');
     } finally {
@@ -589,18 +703,13 @@ export function AccountDetail({ accountId }: { accountId: string }) {
   };
 
   const shareText = async () => {
-    const text = accountShareText(account, { balance, includeBalance });
-    const nav = navigator as Navigator & { share?: (data: ShareData) => Promise<void> };
-    if (nav.share) {
-      try {
-        await nav.share({ title: account.name, text });
-        return;
-      } catch (error) {
-        if ((error as Error).name === 'AbortError') return;
-      }
+    try {
+      const result = await shareOrCopyText(account.name, accountShareText(account));
+      if (result === 'copied') toast('Account details copied');
+      if (result === 'failed') toast('Could not share or copy account details', 'error');
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError') toast((error as Error).message, 'error');
     }
-    const copied = await copyText(text);
-    toast(copied ? 'Account details copied' : 'Could not copy account details', copied ? 'success' : 'error');
   };
 
   return (
@@ -640,13 +749,52 @@ export function AccountDetail({ accountId }: { accountId: string }) {
           <span>
             {account.bankName || 'No bank set'}
             {account.branch ? ` · ${account.branch}` : ''}
-            {account.identifier ? ` · •• ${account.identifier}` : ''}
+            {account.identifier ? ` · •••• ${account.identifier.slice(-4)}` : ''}
           </span>
           <span>{account.archived ? 'Archived' : 'Active'}</span>
         </div>
       </div>
 
       {account.notes ? <p className="tiny muted">{account.notes}</p> : null}
+
+      <Card>
+        <h2 className="card-title">Account details</h2>
+        <div className="meta-grid">
+          {account.holderName ? <div className="meta-box"><p className="meta-box__label">Account holder</p><p className="meta-box__value">{account.holderName}</p></div> : null}
+          {account.kind === 'bank' ? (
+            <>
+              <div className="meta-box"><p className="meta-box__label">Bank</p><p className="meta-box__value">{account.bankName ?? '—'}</p></div>
+              <div className="meta-box"><p className="meta-box__label">Account type</p><p className="meta-box__value">{account.accountType ? account.accountType[0].toUpperCase() + account.accountType.slice(1) : '—'}</p></div>
+              <div className="meta-box"><p className="meta-box__label">Branch</p><p className="meta-box__value">{account.branch ?? '—'}</p></div>
+              <div className="meta-box"><p className="meta-box__label">Account number</p><p className="meta-box__value">{account.identifier ? `•••• ${account.identifier.slice(-4)}` : '—'}</p></div>
+            </>
+          ) : null}
+          {account.kind === 'wallet' ? (
+            <>
+              <div className="meta-box"><p className="meta-box__label">Wallet provider</p><p className="meta-box__value">{account.provider ?? '—'}</p></div>
+              <div className="meta-box"><p className="meta-box__label">Wallet ID</p><p className="meta-box__value">{account.walletId ?? account.identifier ?? '—'}</p></div>
+            </>
+          ) : null}
+          {account.kind === 'credit' ? (
+            <>
+              <div className="meta-box"><p className="meta-box__label">Card provider</p><p className="meta-box__value">{account.provider ?? account.bankName ?? '—'}</p></div>
+              <div className="meta-box"><p className="meta-box__label">Card</p><p className="meta-box__value">{account.cardType ?? '—'} •••• {account.lastFour ?? (account.identifier ?? '').slice(-4)}</p></div>
+              <div className="meta-box"><p className="meta-box__label">Credit limit</p><p className="meta-box__value">{formatMoney(account.creditLimit ?? 0, account.currency, { hide })}</p></div>
+              <div className="meta-box"><p className="meta-box__label">Available credit</p><p className="meta-box__value">{formatMoney(account.availableCredit ?? 0, account.currency, { hide })}</p></div>
+              <div className="meta-box"><p className="meta-box__label">Billing date</p><p className="meta-box__value">{account.billingDate ? formatDate(account.billingDate, state.settings.dateFormat) : '—'}</p></div>
+              <div className="meta-box"><p className="meta-box__label">Payment due</p><p className="meta-box__value">{account.paymentDueDate ? formatDate(account.paymentDueDate, state.settings.dateFormat) : '—'}</p></div>
+            </>
+          ) : null}
+          {account.kind === 'cash' ? <div className="meta-box"><p className="meta-box__label">Type</p><p className="meta-box__value">Cash</p></div> : null}
+          {account.kind === 'other' ? (
+            <>
+              <div className="meta-box"><p className="meta-box__label">Type</p><p className="meta-box__value">{account.accountType ?? '—'}</p></div>
+              <div className="meta-box"><p className="meta-box__label">Provider</p><p className="meta-box__value">{account.provider ?? '—'}</p></div>
+              {account.referenceNumber ? <div className="meta-box"><p className="meta-box__label">Reference</p><p className="meta-box__value">{account.referenceNumber}</p></div> : null}
+            </>
+          ) : null}
+        </div>
+      </Card>
 
       <div className="btn-row">
         <Btn
@@ -729,9 +877,13 @@ export function AccountDetail({ accountId }: { accountId: string }) {
             <Btn
               onClick={() => {
                 try {
-                  actions.account.reconcile(account.id, actual, reconcileDate);
+                  const adjustmentId = actions.account.reconcile(account.id, actual, reconcileDate);
+                  if (adjustmentId && reconcileAttachments.length) {
+                    commitRecordAttachments(reconcileAttachments, [{ type: 'txn', id: adjustmentId }], 'bank-statement');
+                  }
+                  setReconcileAttachments([]);
                   setReconcileOpen(false);
-                  toast('Balance reconciled');
+                  toast(adjustmentId ? 'Balance reconciled' : 'Balance already matches');
                 } catch (err) {
                   toast((err as Error).message, 'error');
                 }
@@ -752,6 +904,13 @@ export function AccountDetail({ accountId }: { accountId: string }) {
         <Field label="Adjustment date">
           <Input type="date" value={reconcileDate} onChange={(e) => setReconcileDate(e.target.value)} />
         </Field>
+        <RecordAttachments
+          links={[]}
+          category="bank-statement"
+          staged={reconcileAttachments}
+          onStagedChange={setReconcileAttachments}
+          title="Supporting statement"
+        />
       </Sheet>
 
       <Sheet
@@ -768,15 +927,6 @@ export function AccountDetail({ accountId }: { accountId: string }) {
             <span className="tiny muted">Rendering account card…</span>
           )}
         </div>
-        <Toggle
-          checked={includeBalance}
-          onChange={(next) => {
-            setIncludeBalance(next);
-            void renderCard(next);
-          }}
-          label="Include balance in the image"
-          description="Off by default. Name, bank, branch and the masked number are always included."
-        />
         <div className="btn-row">
           <Btn variant="soft" icon={<Share2 size={16} />} onClick={() => void shareCard()} loading={sharing}>
             Share image
@@ -784,8 +934,8 @@ export function AccountDetail({ accountId }: { accountId: string }) {
           <Btn variant="soft" onClick={() => void shareText()}>Share text</Btn>
         </div>
         <div className="form-note">
-          The card shows only the last four digits of the account number. Sharing uses your device share sheet;
-          Finora cannot recall a copy once it has been sent.
+          Balance, opening balance, credit limits and internal IDs are never included. For bank accounts the card and
+          text contain only the holder, bank, branch and account number. Finora cannot recall a copy once it has been sent.
         </div>
       </Sheet>
 
@@ -840,7 +990,7 @@ export function TxnForm() {
   const [date, setDate] = useState(existing?.date ?? todayISO());
   const [merchant, setMerchant] = useState(existing?.merchant ?? '');
   const [notes, setNotes] = useState(existing?.notes ?? '');
-  const [attachment, setAttachment] = useState<FilePayload | null>(null);
+  const [attachments, setAttachments] = useState<FilePayload[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -861,16 +1011,6 @@ export function TxnForm() {
     setToAccountId('');
   };
 
-  const pickAttachment = async (file: File | undefined) => {
-    if (!file) return;
-    setError('');
-    try {
-      setAttachment(await compressImage(file, 1400));
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
   const submit = () => {
     setError('');
     if (amount <= 0) { setError('Enter an amount greater than zero.'); return; }
@@ -881,12 +1021,7 @@ export function TxnForm() {
     }
     setBusy(true);
     try {
-      let attachmentId = existing?.attachmentId;
-      if (attachment) {
-        attachmentId = actions.media.add({
-          name: attachment.name, mime: attachment.mime, size: attachment.size, dataUrl: attachment.dataUrl,
-        });
-      }
+      const attachmentId = existing?.attachmentId;
       const payload = {
         kind,
         amount,
@@ -899,8 +1034,12 @@ export function TxnForm() {
         notes: notes.trim() || undefined,
         attachmentId,
       };
+      let savedId = existing?.id ?? '';
       if (existing) actions.txn.update(existing.id, payload);
-      else actions.txn.add(payload);
+      else savedId = actions.txn.add(payload);
+      if (attachments.length) {
+        commitRecordAttachments(attachments, [{ type: 'txn', id: savedId }], kind === 'transfer' ? 'bank-statement' : 'receipt');
+      }
       toast(existing ? 'Transaction updated' : kind === 'transfer' ? 'Transfer recorded' : 'Transaction recorded');
       goBack('/money');
     } catch (err) {
@@ -1000,37 +1139,17 @@ export function TxnForm() {
               </Field>
             ) : null}
 
-            <div className="field">
-              <span className="label">Attachment</span>
-              {attachment?.dataUrl || storedAttachment ? (
-                <div className="upload-box">
-                  <span className="upload-box__preview">
-                    <img src={attachment?.dataUrl ?? storedAttachment} alt="Attachment preview" />
-                  </span>
-                  <span className="upload-box__text">
-                    <span className="upload-box__title">{attachment?.name ?? 'Saved receipt'}</span>
-                    <span className="upload-box__sub">Stored with this transaction</span>
-                  </span>
-                  {attachment ? (
-                    <button className="icon-btn" type="button" aria-label="Remove attachment" onClick={() => setAttachment(null)}>
-                      <Trash2 size={16} />
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
-              <label className="btn btn--soft btn--sm" style={{ alignSelf: 'flex-start' }}>
-                {attachment ? 'Replace attachment' : 'Attach receipt'}
-                <input
-                  type="file"
-                  accept="image/*"
-                  hidden
-                  onChange={(e) => {
-                    void pickAttachment(e.target.files?.[0]);
-                    e.target.value = '';
-                  }}
-                />
-              </label>
-            </div>
+            <RecordAttachments
+              links={existing ? [{ type: 'txn', id: existing.id }] : []}
+              category={kind === 'transfer' ? 'bank-statement' : 'receipt'}
+              staged={attachments}
+              onStagedChange={setAttachments}
+              title={kind === 'transfer' ? 'Transfer slip' : 'Receipts & documents'}
+              disabled={busy}
+            />
+            {storedAttachment ? (
+              <div className="form-note">An older single-file receipt is still preserved with this transaction. New uploads support multiple files.</div>
+            ) : null}
 
             {kind === 'transfer' ? (
               <div className="form-note">
@@ -1050,6 +1169,7 @@ export function TxnDetail({ txnId }: { txnId: string }) {
   const state = useApp();
   const txn = state.transactions.find((t) => t.id === txnId);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [attachmentDraft, setAttachmentDraft] = useState<FilePayload[]>([]);
   const hide = state.settings.hideBalances;
 
   if (!txn) {
@@ -1063,7 +1183,6 @@ export function TxnDetail({ txnId }: { txnId: string }) {
   const from = state.accounts.find((a) => a.id === txn.accountId);
   const to = state.accounts.find((a) => a.id === txn.toAccountId);
   const attachment = txn.attachmentId ? state.media[txn.attachmentId] : undefined;
-  const docs = linkedDocs(state, 'txn', txn.id);
   const system = Boolean(txn.source);
 
   return (
@@ -1076,6 +1195,23 @@ export function TxnDetail({ txnId }: { txnId: string }) {
           {!system ? (
             <IconBtn label="Edit transaction" onClick={() => navigate(`/money/new?kind=${txn.kind}&edit=${txn.id}`)}>
               <Pencil size={18} />
+            </IconBtn>
+          ) : null}
+          {!system ? (
+            <IconBtn
+              label="Duplicate transaction"
+              onClick={() => {
+                const { id: _id, createdAt: _createdAt, ...draft } = txn;
+                try {
+                  actions.txn.add({ ...draft, date: todayISO(), notes: draft.notes ? `${draft.notes} (copy)` : 'Duplicated transaction' });
+                  toast('Transaction duplicated for today');
+                  navigate('/money');
+                } catch (error) {
+                  toast((error as Error).message, 'error');
+                }
+              }}
+            >
+              <Copy size={18} />
             </IconBtn>
           ) : null}
           <IconBtn label="Delete transaction" onClick={() => setDeleteOpen(true)}>
@@ -1132,34 +1268,72 @@ export function TxnDetail({ txnId }: { txnId: string }) {
         </div>
       ) : null}
 
+      <RecordAttachments
+        links={[{ type: 'txn', id: txn.id }]}
+        category="receipt"
+        staged={attachmentDraft}
+        onStagedChange={(files) => {
+          if (files.length) commitRecordAttachments(files, [{ type: 'txn', id: txn.id }], 'receipt');
+          setAttachmentDraft([]);
+        }}
+        title="Receipts & documents"
+      />
+
       {attachment ? (
         <Card>
           <h2 className="card-title">Attachment</h2>
-          <img src={attachment.dataUrl} alt="Receipt" style={{ borderRadius: 12, maxHeight: 260, objectFit: 'contain', background: 'var(--surface-2)' }} />
-          <Btn
-            variant="soft"
-            size="sm"
-            icon={<Download size={16} />}
-            onClick={() => downloadBlob(attachment.name, dataUrlToBlob(attachment.dataUrl))}
-          >
-            Download
-          </Btn>
-        </Card>
-      ) : null}
-
-      {docs.length ? (
-        <Card>
-          <h2 className="card-title">Linked documents</h2>
-          {docs.map((doc) => (
-            <button key={doc.id} className="list-row" onClick={() => navigate(`/vault/${doc.id}`)}>
-              <span className="list-row__icon"><Archive size={16} /></span>
-              <span className="list-row__text">
-                <span className="list-row__title">{doc.name}</span>
-                <span className="list-row__sub">{doc.category.replace('-', ' ')}</span>
+          {attachment.mime.startsWith('image/') ? (
+            <img src={attachment.dataUrl} alt={attachment.name} style={{ borderRadius: 12, maxHeight: 260, maxWidth: '100%', objectFit: 'contain', background: 'var(--surface-2)' }} />
+          ) : (
+            <div className="attachment-file">
+              <span className="attachment-file__icon"><Archive size={20} /></span>
+              <span className="min-w-0">
+                <strong className="block truncate">{attachment.name}</strong>
+                <span className="tiny muted">{attachment.mime} · original file</span>
               </span>
-              <ChevronRight size={17} className="muted" />
-            </button>
-          ))}
+            </div>
+          )}
+          <div className="btn-row">
+            <Btn
+              variant="soft"
+              size="sm"
+              onClick={() => {
+                const url = URL.createObjectURL(dataUrlToBlob(attachment.dataUrl));
+                const win = window.open(url, '_blank', 'noopener,noreferrer');
+                if (!win) {
+                  URL.revokeObjectURL(url);
+                  downloadBlob(attachment.name, dataUrlToBlob(attachment.dataUrl));
+                  toast('Preview was blocked — the file has been downloaded instead.', 'error');
+                  return;
+                }
+                window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+              }}
+            >Preview</Btn>
+            <Btn
+              variant="soft"
+              size="sm"
+              icon={<Download size={16} />}
+              onClick={() => downloadBlob(attachment.name, dataUrlToBlob(attachment.dataUrl))}
+            >Download</Btn>
+            <Btn
+              variant="soft"
+              size="sm"
+              icon={<Share2 size={16} />}
+              onClick={() => {
+                void shareOrDownload(attachment.name, dataUrlToBlob(attachment.dataUrl))
+                  .then((result) => toast(result === 'shared' ? 'Attachment shared' : 'Attachment downloaded'))
+                  .catch((error: Error) => { if (error.name !== 'AbortError') toast(error.message, 'error'); });
+              }}
+            >Share</Btn>
+            <Btn
+              variant="soft"
+              size="sm"
+              onClick={() => {
+                const base = attachment.name.replace(/\.[^.]+$/, '') || 'finora-attachment';
+                downloadBlob(`${base}.${extFor(attachment.mime)}`, dataUrlToBlob(attachment.dataUrl));
+              }}
+            >Export</Btn>
+          </div>
         </Card>
       ) : null}
 

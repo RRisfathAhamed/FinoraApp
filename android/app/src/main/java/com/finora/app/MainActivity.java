@@ -235,6 +235,11 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public void schedule(int id, String title, String body, long at, long repeatMillis) {
+            FinoraNotificationReceiver.schedule(MainActivity.this, id, title, body, at, repeatMillis);
+        }
+
+        @JavascriptInterface
         public void cancel(int id) {
             FinoraNotificationReceiver.cancel(MainActivity.this, id);
         }

@@ -22,7 +22,7 @@ import { useApp, navigate } from '../lib/hooks';
 import { requestHomeWidget } from '../lib/widget';
 import { toast } from '../lib/toast';
 import type { ReactNode } from 'react';
-import { buildNotifications } from '../lib/select';
+import { visibleNotifications } from '../lib/select';
 
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -63,7 +63,7 @@ function Row({
 export default function MoreScreen() {
   const state = useApp();
   const pendingSms = state.smsDrafts.filter((d) => d.status === 'pending').length;
-  const unread = buildNotifications(state).filter((n) => !state.readNotifKeys.includes(n.key)).length;
+  const unread = visibleNotifications(state).filter((n) => !state.readNotifKeys.includes(n.key)).length;
 
   return (
     <Screen title="More" subtitle={`${state.accounts.length} accounts · ${state.settings.currency} primary currency`}>
@@ -73,7 +73,8 @@ export default function MoreScreen() {
         <Row icon={<PiggyBank size={18} />} title="Savings" subtitle="Goals and contributions" to="/savings" />
         <Row icon={<TrendingUp size={18} />} title="Investments" subtitle="Assets and estimated value" to="/investments" />
         <Row icon={<Receipt size={18} />} title="Bills" subtitle="Recurring and one-off obligations" to="/bills" />
-        <Row icon={<CalendarDays size={18} />} title="Calendar" subtitle="Salary, EMI and bill dates" to="/calendar" />
+        <Row icon={<CalendarDays size={18} />} title="Calendar" subtitle="Salary, EMI, bill and reminder dates" to="/calendar" />
+        <Row icon={<Bell size={18} />} title="Reminders" subtitle="Custom bill, card and subscription alerts" to="/reminders" />
       </Group>
 
       <Group title="Analysis">

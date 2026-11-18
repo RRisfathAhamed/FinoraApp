@@ -56,7 +56,9 @@ function baseState(): AppState {
     documents: [],
     media: {},
     smsDrafts: [],
+    reminders: [],
     readNotifKeys: [],
+    deletedNotifKeys: [],
     recentSearches: [],
   };
 }

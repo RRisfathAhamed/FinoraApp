@@ -12,19 +12,24 @@ export function IncomeExpenseBars({
   hide?: boolean;
 }) {
   const max = Math.max(1, ...data.flatMap((d) => [d.income, d.expense]));
+  const hasActivity = data.some((d) => d.income > 0 || d.expense > 0);
   return (
     <div className="bars">
-      <div className="bars__plot" aria-hidden>
-        {data.map((d) => (
-          <div className="bars__group" key={d.label}>
-            <div className="bars__pair">
-              <span className="bars__bar bars__bar--in" style={{ height: `${(d.income / max) * 100}%` }} />
-              <span className="bars__bar bars__bar--out" style={{ height: `${(d.expense / max) * 100}%` }} />
+      {hasActivity ? (
+        <div className="bars__plot" aria-hidden>
+          {data.map((d) => (
+            <div className="bars__group" key={d.label}>
+              <div className="bars__pair">
+                <span className="bars__bar bars__bar--in" style={{ height: `${(d.income / max) * 100}%` }} />
+                <span className="bars__bar bars__bar--out" style={{ height: `${(d.expense / max) * 100}%` }} />
+              </div>
+              <span className="bars__label">{d.label}</span>
             </div>
-            <span className="bars__label">{d.label}</span>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <div className="chart-empty">No income or expenses in this period yet.</div>
+      )}
       <div className="legend">
         <span className="legend__item"><i className="dot dot--in" /> Income</span>
         <span className="legend__item"><i className="dot dot--out" /> Expenses</span>

@@ -7,22 +7,25 @@ import {
   Printer,
   RotateCw,
   Share2,
+  Star,
   Trash2,
   Upload,
   ZoomIn,
   ZoomOut,
   X,
 } from 'lucide-react';
-import type { AppState, DocCategory, DocLink } from '../lib/types';
+import type { AppState, DocCategory, DocLink, VaultDoc } from '../lib/types';
 import { useApp, navigate, goBack } from '../lib/hooks';
 import { formatDate } from '../lib/calc';
 import {
   type FilePayload,
   dataUrlToBlob,
   downloadBlob,
+  extFor,
   readDocument,
   shareOrDownload,
 } from '../lib/files';
+import { PdfViewer } from '../components/PdfViewer';
 import { actions, DOC_CATEGORIES } from '../lib/store';
 import { toast } from '../lib/toast';
 import {
@@ -64,18 +67,106 @@ function describeLink(state: AppState, link: DocLink): string {
       const job = state.jobs.find((j) => j.id === record?.jobId);
       return job ? `${job.company} · ${record?.periodKey}` : 'Salary record';
     }
+    case 'salary-payment': {
+      const record = state.salaryRecords.find((r) => r.payments.some((p) => p.id === link.id));
+      const payment = record?.payments.find((p) => p.id === link.id);
+      const job = state.jobs.find((j) => j.id === record?.jobId);
+      return payment ? `Salary payment · ${job?.company ?? ''} · ${formatDate(payment.date)}` : 'Salary payment';
+    }
     case 'bill':
       return state.bills.find((b) => b.id === link.id)?.name ?? 'Bill';
+    case 'bill-payment': {
+      const payment = state.billPayments.find((p) => p.id === link.id);
+      const bill = state.bills.find((b) => b.id === payment?.billId);
+      return payment ? `${bill?.name ?? 'Bill'} · ${formatDate(payment.date)}` : 'Bill payment';
+    }
     case 'goal':
       return state.goals.find((g) => g.id === link.id)?.name ?? 'Savings goal';
+    case 'contribution': {
+      const goal = state.goals.find((g) => g.contributions.some((c) => c.id === link.id));
+      const contribution = goal?.contributions.find((c) => c.id === link.id);
+      return contribution ? `${goal?.name ?? 'Savings'} · ${formatDate(contribution.date)}` : 'Savings contribution';
+    }
     case 'investment':
       return state.investments.find((i) => i.id === link.id)?.name ?? 'Investment';
-    case 'emi':
-      return 'EMI instalment';
+    case 'emi': {
+      const payment = state.emiPayments.find((p) => p.id === link.id);
+      const loan = state.loans.find((l) => l.id === payment?.loanId);
+      return payment ? `${loan?.name ?? 'Loan'} · ${formatDate(payment.date)}` : 'Loan payment';
+    }
     default:
       return 'Record';
   }
 }
+
+function linkHref(state: AppState, link: DocLink): string | null {
+  switch (link.type) {
+    case 'account': return `/money/account/${link.id}`;
+    case 'txn': return `/money/txn/${link.id}`;
+    case 'loan': return `/loans/${link.id}`;
+    case 'emi': {
+      const payment = state.emiPayments.find((p) => p.id === link.id);
+      return payment ? `/loans/${payment.loanId}` : null;
+    }
+    case 'salary': {
+      const record = state.salaryRecords.find((r) => r.id === link.id);
+      return record ? `/salary/record/${record.jobId}/${encodeURIComponent(record.periodKey)}` : null;
+    }
+    case 'salary-payment': {
+      const record = state.salaryRecords.find((r) => r.payments.some((p) => p.id === link.id));
+      return record ? `/salary/record/${record.jobId}/${encodeURIComponent(record.periodKey)}` : null;
+    }
+    case 'bill': return '/bills';
+    case 'bill-payment': return '/bills';
+    case 'goal': return '/savings';
+    case 'contribution': return '/savings';
+    case 'investment': return '/investments';
+    default: return null;
+  }
+}
+
+type DocumentCollection = 'income' | 'expense' | 'transfer' | 'salary' | 'loan' | 'gold' | 'credit-card' | 'bill' | 'savings' | 'other';
+
+function collectionFor(state: AppState, doc: VaultDoc): DocumentCollection {
+  for (const link of doc.links) {
+    if (link.type === 'txn') {
+      const txn = state.transactions.find((t) => t.id === link.id);
+      if (!txn) continue;
+      if (/credit card/i.test(`${txn.category ?? ''} ${txn.merchant ?? ''}`)) return 'credit-card';
+      return txn.kind === 'transfer' ? 'transfer' : txn.kind;
+    }
+    if (link.type === 'salary' || link.type === 'salary-payment') return 'salary';
+    if (link.type === 'loan') {
+      return state.loans.find((l) => l.id === link.id)?.category === 'gold' ? 'gold' : 'loan';
+    }
+    if (link.type === 'emi') {
+      const payment = state.emiPayments.find((p) => p.id === link.id);
+      const loan = state.loans.find((l) => l.id === payment?.loanId);
+      return loan?.category === 'gold' ? 'gold' : 'loan';
+    }
+    if (link.type === 'bill' || link.type === 'bill-payment') {
+      const payment = link.type === 'bill-payment' ? state.billPayments.find((p) => p.id === link.id) : undefined;
+      const bill = state.bills.find((b) => b.id === (link.type === 'bill' ? link.id : payment?.billId));
+      return /credit card/i.test(`${bill?.name ?? ''} ${bill?.category ?? ''}`) ? 'credit-card' : 'bill';
+    }
+    if (link.type === 'goal' || link.type === 'contribution') return 'savings';
+  }
+  return 'other';
+}
+
+const COLLECTIONS: { value: 'all' | DocumentCollection; label: string }[] = [
+  { value: 'all', label: 'All records' },
+  { value: 'income', label: 'Income' },
+  { value: 'expense', label: 'Expenses' },
+  { value: 'transfer', label: 'Transfers' },
+  { value: 'salary', label: 'Salary' },
+  { value: 'loan', label: 'Loans' },
+  { value: 'gold', label: 'Gold pawning' },
+  { value: 'credit-card', label: 'Credit cards' },
+  { value: 'bill', label: 'Bills' },
+  { value: 'savings', label: 'Savings' },
+  { value: 'other', label: 'Other' },
+];
 
 function linkOptions(state: AppState, type: DocLink['type']): { id: string; label: string }[] {
   switch (type) {
@@ -93,6 +184,31 @@ function linkOptions(state: AppState, type: DocLink['type']): { id: string; labe
         const job = state.jobs.find((j) => j.id === r.jobId);
         return { id: r.id, label: `${job?.company ?? 'Job'} · ${r.periodKey}` };
       });
+    case 'salary-payment':
+      return state.salaryRecords.flatMap((record) => {
+        const job = state.jobs.find((j) => j.id === record.jobId);
+        return record.payments.map((payment) => ({
+          id: payment.id,
+          label: `${job?.company ?? 'Job'} · payment ${formatDate(payment.date)}`,
+        }));
+      });
+    case 'bill-payment':
+      return state.billPayments.map((payment) => ({
+        id: payment.id,
+        label: `${state.bills.find((b) => b.id === payment.billId)?.name ?? 'Bill'} · ${formatDate(payment.date)}`,
+      }));
+    case 'contribution':
+      return state.goals.flatMap((goal) =>
+        goal.contributions.map((contribution) => ({
+          id: contribution.id,
+          label: `${goal.name} · ${formatDate(contribution.date)}`,
+        })),
+      );
+    case 'emi':
+      return state.emiPayments.map((payment) => ({
+        id: payment.id,
+        label: `${state.loans.find((l) => l.id === payment.loanId)?.name ?? 'Loan'} · ${formatDate(payment.date)}`,
+      }));
     case 'bill':
       return state.bills.map((b) => ({ id: b.id, label: b.name }));
     case 'goal':
@@ -107,7 +223,11 @@ function linkOptions(state: AppState, type: DocLink['type']): { id: string; labe
 export function VaultScreen() {
   const state = useApp();
   const [category, setCategory] = useState<'all' | DocCategory>('all');
+  const [collection, setCollection] = useState<'all' | DocumentCollection>('all');
+  const [fileKind, setFileKind] = useState<'all' | 'pdf' | 'image' | 'document' | 'favorite'>('all');
   const [term, setTerm] = useState('');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [file, setFile] = useState<FilePayload | null>(null);
   const [name, setName] = useState('');
@@ -119,8 +239,17 @@ export function VaultScreen() {
 
   const docs = state.documents.filter((doc) => {
     if (category !== 'all' && doc.category !== category) return false;
+    if (collection !== 'all' && collectionFor(state, doc) !== collection) return false;
+    if (fromDate && doc.createdAt.slice(0, 10) < fromDate) return false;
+    if (toDate && doc.createdAt.slice(0, 10) > toDate) return false;
+    if (fileKind === 'pdf' && !doc.mime.includes('pdf')) return false;
+    if (fileKind === 'image' && !doc.mime.startsWith('image/')) return false;
+    if (fileKind === 'document' && (doc.mime.startsWith('image/') || doc.mime.includes('pdf'))) return false;
+    if (fileKind === 'favorite' && !doc.favorite) return false;
     if (!term.trim()) return true;
-    return doc.name.toLowerCase().includes(term.trim().toLowerCase());
+    const needle = term.trim().toLowerCase();
+    return [doc.name, doc.notes ?? '', ...doc.links.map((link) => describeLink(state, link))]
+      .some((value) => value.toLowerCase().includes(needle));
   });
   const totalSize = state.documents.reduce((t, d) => t + d.size, 0);
 
@@ -178,7 +307,7 @@ export function VaultScreen() {
           {reading ? <span className="spin"><Upload size={19} /></span> : <Upload size={19} />}
           <input
             type="file"
-            accept="application/pdf,image/*"
+            accept=".pdf,image/*,.doc,.docx,.xls,.xlsx"
             hidden
             onChange={(e) => {
               void pickFile(e.target.files?.[0]);
@@ -191,11 +320,40 @@ export function VaultScreen() {
       {error ? <div className="form-error" role="alert">{error}</div> : null}
 
       <Field label="Search documents">
-        <Input value={term} onChange={(e) => setTerm(e.target.value)} placeholder="Name or category" inputMode="search" />
+        <Input value={term} onChange={(e) => setTerm(e.target.value)} placeholder="File name, transaction, category or notes" inputMode="search" />
       </Field>
 
+      <div className="row">
+        <Field label="Added from">
+          <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+        </Field>
+        <Field label="Added to">
+          <Input type="date" value={toDate} min={fromDate || undefined} onChange={(e) => setToDate(e.target.value)} />
+        </Field>
+      </div>
+
       <div className="chip-row">
-        <button className={`chip ${category === 'all' ? 'chip--active' : ''}`} onClick={() => setCategory('all')}>All</button>
+        {COLLECTIONS.map((item) => (
+          <button
+            key={item.value}
+            className={`chip ${collection === item.value ? 'chip--active' : ''}`}
+            onClick={() => setCollection(item.value)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="chip-row">
+        <button className={`chip ${fileKind === 'all' ? 'chip--active' : ''}`} onClick={() => setFileKind('all')}>All files</button>
+        <button className={`chip ${fileKind === 'pdf' ? 'chip--active' : ''}`} onClick={() => setFileKind('pdf')}>PDF</button>
+        <button className={`chip ${fileKind === 'image' ? 'chip--active' : ''}`} onClick={() => setFileKind('image')}>Images</button>
+        <button className={`chip ${fileKind === 'document' ? 'chip--active' : ''}`} onClick={() => setFileKind('document')}>Documents</button>
+        <button className={`chip ${fileKind === 'favorite' ? 'chip--active' : ''}`} onClick={() => setFileKind('favorite')}>★ Favourites</button>
+      </div>
+
+      <div className="chip-row">
+        <button className={`chip ${category === 'all' ? 'chip--active' : ''}`} onClick={() => setCategory('all')}>All categories</button>
         {DOC_CATEGORIES.map((c) => (
           <button
             key={c.value}
@@ -219,9 +377,9 @@ export function VaultScreen() {
                 )}
               </span>
               <span className="doc-body">
-                <span className="doc-name">{doc.name}</span>
-                <span className="tiny muted">{docLabel(doc.category)} · {sizeText(doc.size)}</span>
-                {doc.links.length ? <span className="tiny muted">{doc.links.length} linked record{doc.links.length > 1 ? 's' : ''}</span> : null}
+                <span className="doc-name">{doc.favorite ? <Star size={13} fill="currentColor" /> : null} {doc.name}</span>
+                <span className="tiny muted">{docLabel(doc.category)} · {sizeText(doc.size)} · {doc.mime.includes('pdf') ? 'PDF' : doc.mime.startsWith('image/') ? 'Image' : 'Document'}</span>
+                {doc.links.length ? <span className="tiny muted">{COLLECTIONS.find((item) => item.value === collectionFor(state, doc))?.label} · {doc.links.length} linked record{doc.links.length > 1 ? 's' : ''}</span> : null}
               </span>
             </button>
           ))}
@@ -237,7 +395,7 @@ export function VaultScreen() {
             Upload a document
             <input
               type="file"
-              accept="application/pdf,image/*"
+              accept=".pdf,image/*,.doc,.docx,.xls,.xlsx"
               hidden
               onChange={(e) => {
                 void pickFile(e.target.files?.[0]);
@@ -268,7 +426,7 @@ export function VaultScreen() {
         {file?.mime.startsWith('image/') ? (
           <img src={file.dataUrl} alt="Preview" style={{ maxHeight: 180, objectFit: 'contain', borderRadius: 12, background: 'var(--surface-2)' }} />
         ) : (
-          <div className="banner banner--muted"><FileText size={16} /> PDF selected — {sizeText(file?.size ?? 0)}</div>
+          <div className="banner banner--muted"><FileText size={16} /> {file?.mime.includes('pdf') ? 'PDF' : 'Document'} selected — {sizeText(file?.size ?? 0)}</div>
         )}
         <Field label="Document name">
           <Input value={name} onChange={(e) => setName(e.target.value)} />
@@ -281,7 +439,7 @@ export function VaultScreen() {
         <Field label="Notes">
           <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
         </Field>
-        <p className="tiny muted">Maximum 12 MB per file. PDF, JPG, PNG, WEBP and HEIC are accepted; HEIC support depends on your browser decoder.</p>
+        <p className="tiny muted">Maximum 12 MB per file. PDF, JPG, PNG, WEBP, HEIC, DOCX and XLSX are accepted. Office documents keep their original bytes and open in your device’s document viewer.</p>
       </Sheet>
     </Screen>
   );
@@ -299,10 +457,8 @@ export function DocumentViewer({ docId }: { docId: string }) {
   const [notes, setNotes] = useState(doc?.notes ?? '');
   const [linkType, setLinkType] = useState<DocLink['type']>('loan');
   const [linkId, setLinkId] = useState('');
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [imageFailed, setImageFailed] = useState(false);
   const viewerRef = useRef<HTMLDivElement>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
   const pinch = useRef<{ distance: number; scale: number } | null>(null);
 
@@ -315,16 +471,6 @@ export function DocumentViewer({ docId }: { docId: string }) {
     setImageFailed(false);
   }, [doc?.id]);
 
-  // Chrome refuses to run its PDF viewer for data: URLs inside an iframe, so
-  // PDFs are exposed through a same-origin blob URL that the viewer can load.
-  useEffect(() => {
-    setPdfUrl(null);
-    if (!doc || doc.mime.startsWith('image/')) return;
-    const url = URL.createObjectURL(dataUrlToBlob(doc.dataUrl));
-    setPdfUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [doc?.id, doc?.dataUrl, doc?.mime]);
-
   if (!doc) {
     return (
       <Screen title="Document" back>
@@ -334,13 +480,33 @@ export function DocumentViewer({ docId }: { docId: string }) {
   }
 
   const isImage = doc.mime.startsWith('image/');
+  const isPdf = doc.mime.includes('pdf');
   const clampScale = (value: number) => Math.min(5, Math.max(1, value));
 
   const blob = () => dataUrlToBlob(doc.dataUrl);
 
   const download = () => {
     downloadBlob(doc.name, blob());
-    toast('Download started');
+    toast('Preparing download…');
+  };
+
+  const exportDocument = () => {
+    const base = doc.name.replace(/\.[^.]+$/, '') || 'finora-document';
+    const filename = `${base}.${extFor(doc.mime)}`;
+    downloadBlob(filename, blob());
+    toast(`Exporting ${filename}`);
+  };
+
+  const openDocument = () => {
+    const url = URL.createObjectURL(blob());
+    const win = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!win) {
+      URL.revokeObjectURL(url);
+      downloadBlob(doc.name, blob());
+      toast('Opening was blocked — the file has been downloaded instead.', 'error');
+      return;
+    }
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   };
 
   const share = async () => {
@@ -355,16 +521,23 @@ export function DocumentViewer({ docId }: { docId: string }) {
   const print = () => {
     if (isImage) {
       const win = window.open('', '_blank');
-      if (!win) { toast('Allow pop-ups to print', 'error'); return; }
+      if (!win) { toast('Allow pop-ups to print this document.', 'error'); return; }
       win.document.write(`<title>${doc.name}</title><img src="${doc.dataUrl}" style="max-width:100%" onload="window.print()" />`);
       win.document.close();
-    } else {
-      try {
-        iframeRef.current?.contentWindow?.print();
-      } catch {
-        toast('Your browser blocked printing this PDF — download it instead', 'error');
-      }
+      return;
     }
+    const url = URL.createObjectURL(blob());
+    const win = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!win) {
+      URL.revokeObjectURL(url);
+      downloadBlob(doc.name, blob());
+      toast('Printing was blocked — download the PDF and print it from your files app.', 'error');
+      return;
+    }
+    window.setTimeout(() => {
+      try { win.print(); } catch { toast('Use the PDF viewer’s print button.', 'error'); }
+    }, 1200);
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   };
 
   const toggleFullscreen = () => {
@@ -384,14 +557,37 @@ export function DocumentViewer({ docId }: { docId: string }) {
           <h1 className="fullform__title">{doc.name}</h1>
           <p className="fullform__sub">{docLabel(doc.category)} · {sizeText(doc.size)}</p>
         </div>
-        <IconBtn label="Document details" onClick={() => setMetaOpen(true)}>
-          <Link2 size={19} />
-        </IconBtn>
+        <div className="hstack">
+          <IconBtn label={doc.favorite ? 'Remove from favourites' : 'Add to favourites'} onClick={() => actions.document.update(doc.id, { favorite: !doc.favorite })}>
+            <Star size={19} fill={doc.favorite ? 'currentColor' : 'none'} />
+          </IconBtn>
+          <IconBtn label="Document details" onClick={() => setMetaOpen(true)}>
+            <Link2 size={19} />
+          </IconBtn>
+        </div>
       </header>
+
+      {doc.links.length ? (
+        <div className="chip-row viewer-links">
+          {doc.links.map((link) => {
+            const href = linkHref(state, link);
+            return (
+              <button
+                key={`${link.type}:${link.id}`}
+                className="chip"
+                disabled={!href}
+                onClick={() => href && navigate(href)}
+              >
+                Open {describeLink(state, link)}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
 
       <div
         ref={viewerRef}
-        className="viewer"
+        className={`viewer${!isImage && isPdf ? ' viewer--pdf' : ''}`}
         onPointerDown={(e) => {
           if (!isImage) return;
           drag.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
@@ -450,22 +646,27 @@ export function DocumentViewer({ docId }: { docId: string }) {
               style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale}) rotate(${rotation}deg)` }}
             />
           )
-        ) : pdfUrl ? (
-          <iframe ref={iframeRef} src={`${pdfUrl}#toolbar=1&navpanes=0&view=FitH`} title={doc.name} />
+        ) : isPdf ? (
+          <PdfViewer dataUrl={doc.dataUrl} name={doc.name} />
         ) : (
           <div className="viewer__fallback">
-            <FileText size={30} />
-            <p className="tiny">Preparing PDF…</p>
+            <FileText size={36} />
+            <p className="small">This file type opens in your device’s document viewer.</p>
+            <p className="tiny muted">{doc.mime} · {sizeText(doc.size)}</p>
+            <div className="btn-row">
+              <Btn size="sm" variant="soft" onClick={openDocument}>Open</Btn>
+              <Btn size="sm" variant="soft" onClick={download}>Download</Btn>
+            </div>
           </div>
         )}
       </div>
 
-      {!isImage ? (
-        <p className="viewport-note">
-          Page navigation, page count and fit-width come from your browser’s PDF viewer. Download to keep an offline copy.
-        </p>
-      ) : (
+      {isPdf ? (
+        <p className="viewport-note">Rendered on this device · use the toolbar for pages and zoom · download to keep the original</p>
+      ) : isImage ? (
         <p className="viewport-note">Pinch or scroll to zoom · drag to pan · double-tap to fit</p>
+      ) : (
+        <p className="viewport-note">Office documents are preserved exactly and open with your device’s document app.</p>
       )}
 
       <div className="viewer__tools">
@@ -477,12 +678,11 @@ export function DocumentViewer({ docId }: { docId: string }) {
             <Btn size="sm" variant="soft" icon={<RotateCw size={16} />} onClick={() => setRotation((r) => (r + 90) % 360)}>Rotate</Btn>
           </>
         ) : null}
-        {!isImage && pdfUrl ? (
-          <Btn size="sm" variant="soft" onClick={() => window.open(pdfUrl, '_blank', 'noopener')}>Open</Btn>
-        ) : null}
+        <Btn size="sm" variant="soft" onClick={openDocument}>Open</Btn>
         <Btn size="sm" variant="soft" icon={<Download size={16} />} onClick={download}>Download</Btn>
         <Btn size="sm" variant="soft" icon={<Share2 size={16} />} onClick={() => void share()}>Share</Btn>
-        <Btn size="sm" variant="soft" icon={<Printer size={16} />} onClick={print}>Print</Btn>
+        {isImage || isPdf ? <Btn size="sm" variant="soft" icon={<Printer size={16} />} onClick={print}>Print</Btn> : null}
+        <Btn size="sm" variant="soft" onClick={exportDocument}>Export</Btn>
         <Btn size="sm" variant="soft" onClick={toggleFullscreen}>Full screen</Btn>
       </div>
 
@@ -518,18 +718,27 @@ export function DocumentViewer({ docId }: { docId: string }) {
           <p className="form-section__title">Linked records</p>
           {doc.links.length ? (
             <div className="hstack wrap">
-              {doc.links.map((link) => (
-                <span key={`${link.type}:${link.id}`} className="chip">
-                  {describeLink(state, link)}
-                  <button
-                    aria-label="Unlink record"
-                    style={{ marginLeft: 6, border: 0, background: 'none', color: 'inherit', padding: 0 }}
-                    onClick={() => actions.documents.unlink(doc.id, link)}
-                  >
-                    <X size={12} />
-                  </button>
-                </span>
-              ))}
+              {doc.links.map((link) => {
+                const href = linkHref(state, link);
+                return (
+                  <span key={`${link.type}:${link.id}`} className="chip">
+                    <button
+                      className="chip__link"
+                      disabled={!href}
+                      onClick={() => href && navigate(href)}
+                    >
+                      {describeLink(state, link)}
+                    </button>
+                    <button
+                      aria-label="Unlink record"
+                      style={{ marginLeft: 6, border: 0, background: 'none', color: 'inherit', padding: 0 }}
+                      onClick={() => actions.documents.unlink(doc.id, link)}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                );
+              })}
             </div>
           ) : (
             <p className="tiny muted">Link this document to the loan, salary period or transaction it belongs to.</p>
@@ -537,11 +746,15 @@ export function DocumentViewer({ docId }: { docId: string }) {
           <Field label="Record type">
             <Select value={linkType} onChange={(e) => { setLinkType(e.target.value as DocLink['type']); setLinkId(''); }}>
               <option value="loan">Loan</option>
+              <option value="emi">Loan payment</option>
               <option value="txn">Transaction</option>
               <option value="account">Account</option>
               <option value="salary">Salary record</option>
+              <option value="salary-payment">Salary payment</option>
               <option value="bill">Bill</option>
+              <option value="bill-payment">Bill payment</option>
               <option value="goal">Savings goal</option>
+              <option value="contribution">Savings contribution</option>
               <option value="investment">Investment</option>
             </Select>
           </Field>

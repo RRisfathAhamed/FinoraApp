@@ -3,11 +3,12 @@ import {
   Briefcase,
   ChevronRight,
   Pencil,
+  Paperclip,
   Plus,
   Trash2,
   Wallet,
 } from 'lucide-react';
-import type { Job, SalaryAdjustments, SalaryRecord, SalaryType } from '../lib/types';
+import type { Job, SalaryAdjustments, SalaryPayment, SalaryRecord, SalaryType } from '../lib/types';
 import { useApp, navigate, goBack } from '../lib/hooks';
 import {
   addMonthsClamped,
@@ -31,6 +32,8 @@ import {
 import { formatMoney } from '../lib/money';
 import { actions } from '../lib/store';
 import { toast } from '../lib/toast';
+import type { FilePayload } from '../lib/files';
+import { commitRecordAttachments, RecordAttachments } from '../components/RecordAttachments';
 import {
   Btn,
   Card,
@@ -516,12 +519,20 @@ export function SalaryRecordForm({ jobId, periodKey: routePeriod }: { jobId: str
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [paymentFor, setPaymentFor] = useState<{ recordId: string; remaining: number } | null>(null);
   const [payAmount, setPayAmount] = useState(0);
   const [payDate, setPayDate] = useState(todayISO());
   const [payAccount, setPayAccount] = useState('');
   const [payError, setPayError] = useState('');
   const [payBusy, setPayBusy] = useState(false);
+  const [attachments, setAttachments] = useState<FilePayload[]>([]);
+  const [paymentAttachments, setPaymentAttachments] = useState<FilePayload[]>([]);
+  const [docPayment, setDocPayment] = useState<SalaryPayment | null>(null);
+  const [paymentDocDraft, setPaymentDocDraft] = useState<FilePayload[]>([]);
+  const [editPayment, setEditPayment] = useState<SalaryPayment | null>(null);
+  const [editAmount, setEditAmount] = useState(0);
+  const [editDate, setEditDate] = useState(todayISO());
+  const [editAccount, setEditAccount] = useState('');
 
   const record = state.salaryRecords.find(
     (r) => r.jobId === jobId && r.periodKey === periodKey,
@@ -567,12 +578,22 @@ export function SalaryRecordForm({ jobId, periodKey: routePeriod }: { jobId: str
   const set = <K extends keyof SalaryAdjustments>(key: K, value: SalaryAdjustments[K]) =>
     setAdjustments((prev) => ({ ...prev, [key]: value }));
 
+  const beginPayment = (recordId: string, amount: number) => {
+    const defaultAccount = paymentAccounts.find((a) => a.id === job.accountId)?.id ?? paymentAccounts[0]?.id ?? '';
+    setPaymentFor({ recordId, remaining: amount });
+    setPayAmount(amount);
+    setPayDate(todayISO());
+    setPayAccount(defaultAccount);
+    setPayError('');
+    setPaymentAttachments([]);
+  };
+
   const submit = () => {
     setError('');
     setBusy(true);
     try {
       totalChecks();
-      actions.salary.save({
+      const savedId = actions.salary.save({
         id: record?.id,
         jobId: job.id,
         periodKey,
@@ -581,7 +602,14 @@ export function SalaryRecordForm({ jobId, periodKey: routePeriod }: { jobId: str
         loanId: loanId || undefined,
         notes: notes.trim() || undefined,
       });
+      if (attachments.length) {
+        commitRecordAttachments(attachments, [{ type: 'salary', id: savedId }], 'payslip');
+        setAttachments([]);
+      }
       toast(record ? 'Salary record updated' : 'Salary record saved');
+      // Continue directly into payment confirmation: saving a payroll record
+      // must never look like the salary was already received.
+      if (remaining > 0) beginPayment(savedId, remaining);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -602,23 +630,28 @@ export function SalaryRecordForm({ jobId, periodKey: routePeriod }: { jobId: str
   };
 
   const openPayment = () => {
-    setPayAmount(remaining);
-    setPayDate(todayISO());
-    setPayAccount(job.accountId ?? paymentAccounts[0]?.id ?? '');
-    setPayError('');
-    setPaymentOpen(true);
+    if (record) beginPayment(record.id, remaining);
   };
 
   const savePayment = () => {
     setPayError('');
-    if (!record) { setPayError('Save the salary record first.'); return; }
+    if (!paymentFor) { setPayError('Save the salary record first.'); return; }
     if (payAmount <= 0) { setPayError('Enter an amount greater than zero.'); return; }
     if (!payAccount) { setPayError('Select the account that received the money.'); return; }
     setPayBusy(true);
     try {
-      actions.salary.addPayment(record.id, { date: payDate, amount: payAmount, accountId: payAccount });
-      setPaymentOpen(false);
+      const completesPeriod = payAmount >= paymentFor.remaining;
+      const paymentId = actions.salary.addPayment(paymentFor.recordId, { date: payDate, amount: payAmount, accountId: payAccount });
+      if (paymentAttachments.length) {
+        commitRecordAttachments(
+          paymentAttachments,
+          [{ type: 'salary-payment', id: paymentId }, { type: 'salary', id: paymentFor.recordId }],
+          'payslip',
+        );
+      }
+      setPaymentFor(null);
       toast('Salary payment recorded as income');
+      if (completesPeriod) goBack('/salary');
     } catch (err) {
       setPayError((err as Error).message);
     } finally {
@@ -811,6 +844,13 @@ export function SalaryRecordForm({ jobId, periodKey: routePeriod }: { jobId: str
           <Field label="Notes">
             <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional payroll note" />
           </Field>
+          <RecordAttachments
+            links={record ? [{ type: 'salary', id: record.id }] : []}
+            category="payslip"
+            staged={attachments}
+            onStagedChange={setAttachments}
+            title="Payslip & salary documents"
+          />
         </div>
 
         {record ? (
@@ -833,6 +873,25 @@ export function SalaryRecordForm({ jobId, periodKey: routePeriod }: { jobId: str
                         {formatDate(payment.date, state.settings.dateFormat)} · {state.accounts.find((a) => a.id === payment.accountId)?.name ?? 'Account'}
                       </span>
                     </span>
+                    <button
+                      className="icon-btn icon-btn--plain"
+                      aria-label={`Edit payment ${formatMoney(payment.amount, jobCurrency)}`}
+                      onClick={() => {
+                        setEditPayment(payment);
+                        setEditAmount(payment.amount);
+                        setEditDate(payment.date);
+                        setEditAccount(payment.accountId);
+                      }}
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      className="icon-btn icon-btn--plain"
+                      aria-label={`Documents for payment ${formatMoney(payment.amount, jobCurrency)}`}
+                      onClick={() => { setDocPayment(payment); setPaymentDocDraft([]); }}
+                    >
+                      <Paperclip size={16} />
+                    </button>
                     <button
                       className="icon-btn icon-btn--plain"
                       aria-label="Remove payment"
@@ -868,14 +927,14 @@ export function SalaryRecordForm({ jobId, periodKey: routePeriod }: { jobId: str
       </div>
 
       <Sheet
-        open={paymentOpen}
-        onClose={() => setPaymentOpen(false)}
+        open={Boolean(paymentFor)}
+        onClose={() => setPaymentFor(null)}
         title="Record salary payment"
         subtitle={`${formatMoney(received, jobCurrency)} received · ${formatMoney(remaining, jobCurrency)} remaining`}
         footer={
           <>
-            <Btn variant="soft" onClick={() => setPaymentOpen(false)} disabled={payBusy}>Cancel</Btn>
-            <Btn onClick={savePayment} loading={payBusy}>Add payment</Btn>
+            <Btn variant="soft" onClick={() => setPaymentFor(null)} disabled={payBusy}>Cancel</Btn>
+            <Btn onClick={savePayment} loading={payBusy}>Record payment</Btn>
           </>
         }
       >
@@ -890,7 +949,83 @@ export function SalaryRecordForm({ jobId, periodKey: routePeriod }: { jobId: str
             {paymentAccounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.currency}</option>)}
           </Select>
         </Field>
+        <RecordAttachments
+          links={[]}
+          category="payslip"
+          staged={paymentAttachments}
+          onStagedChange={setPaymentAttachments}
+          title="Bank credit slip"
+        />
         <p className="hint">Partial payments are supported. Finora creates an income transaction for exactly this amount and updates the account balance.</p>
+      </Sheet>
+
+      <Sheet
+        open={Boolean(editPayment)}
+        onClose={() => setEditPayment(null)}
+        title="Edit salary payment"
+        footer={
+          <>
+            <Btn variant="soft" onClick={() => setEditPayment(null)}>Cancel</Btn>
+            <Btn
+              onClick={() => {
+                if (!editPayment || !record) return;
+                try {
+                  actions.salary.updatePayment(record.id, editPayment.id, {
+                    amount: editAmount,
+                    date: editDate,
+                    accountId: editAccount,
+                  });
+                  setEditPayment(null);
+                  toast('Payment updated');
+                } catch (err) {
+                  toast((err as Error).message, 'error');
+                }
+              }}
+            >
+              Save payment
+            </Btn>
+          </>
+        }
+      >
+        <MoneyField label="Amount received" value={editAmount} currency={jobCurrency} onChange={setEditAmount} />
+        <Field label="Payment date">
+          <Input type="date" value={editDate} max={todayISO()} onChange={(e) => setEditDate(e.target.value)} />
+        </Field>
+        <Field label="Paid into account">
+          <Select value={editAccount} onChange={(e) => setEditAccount(e.target.value)}>
+            <option value="">Select account</option>
+            {state.accounts.filter((a) => !a.archived && a.currency === jobCurrency).map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </Select>
+        </Field>
+      </Sheet>
+
+      <Sheet
+        open={Boolean(docPayment)}
+        onClose={() => setDocPayment(null)}
+        title="Salary payment documents"
+        subtitle={docPayment ? `${formatMoney(docPayment.amount, jobCurrency)} · ${formatDate(docPayment.date, state.settings.dateFormat)}` : undefined}
+        footer={<Btn variant="soft" onClick={() => setDocPayment(null)}>Done</Btn>}
+      >
+        {docPayment ? (
+          <RecordAttachments
+            links={[{ type: 'salary-payment', id: docPayment.id }]}
+            category="payslip"
+            staged={paymentDocDraft}
+            onStagedChange={(files) => {
+              if (files.length) {
+                commitRecordAttachments(
+                  files,
+                  [{ type: 'salary-payment', id: docPayment.id }, { type: 'salary', id: record?.id ?? '' }],
+                  'payslip',
+                );
+              }
+              setPaymentDocDraft([]);
+            }}
+            title="Bank credit slip"
+          />
+        ) : null}
       </Sheet>
 
       <Confirm

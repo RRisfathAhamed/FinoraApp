@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react';
 import {
+  Bell,
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  Paperclip,
   Plus,
   Receipt,
   RotateCcw,
@@ -12,6 +14,7 @@ import type { Bill, BillFrequency } from '../lib/types';
 import { useApp, navigate } from '../lib/hooks';
 import {
   addDays,
+  addMonthsClamped,
   billOccurrenceList,
   billOccurrences,
   formatDate,
@@ -30,6 +33,8 @@ import { formatMoney } from '../lib/money';
 import { actions } from '../lib/store';
 import { ALL_CATEGORIES } from '../lib/categories';
 import { toast } from '../lib/toast';
+import type { FilePayload } from '../lib/files';
+import { commitRecordAttachments, RecordAttachments } from '../components/RecordAttachments';
 import {
   Btn,
   Card,
@@ -48,6 +53,7 @@ import {
   Textarea,
 } from '../components/ui';
 import { StatusPill } from '../components/bits';
+import { reminderOccurrencesInMonth } from '../lib/reminders';
 
 /* -------------------------------------------------------------------- bills */
 
@@ -69,6 +75,9 @@ export function BillsScreen() {
   const [payDate, setPayDate] = useState(today);
   const [payAccount, setPayAccount] = useState('');
   const [payError, setPayError] = useState('');
+  const [payAttachments, setPayAttachments] = useState<FilePayload[]>([]);
+  const [docPayment, setDocPayment] = useState<{ id: string; billId: string; title: string; sub: string } | null>(null);
+  const [docDraft, setDocDraft] = useState<FilePayload[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<Bill | null>(null);
 
   const occurrences = useMemo(
@@ -87,6 +96,7 @@ export function BillsScreen() {
     setPayDate(today);
     setPayAccount(bill.accountId ?? state.accounts.find((a) => !a.archived && a.currency === bill.currency)?.id ?? '');
     setPayError('');
+    setPayAttachments([]);
   };
 
   return (
@@ -181,6 +191,22 @@ export function BillsScreen() {
                 <span className="list-row__trail">
                   <button
                     className="icon-btn icon-btn--plain"
+                    aria-label={`Receipts for ${occurrence.bill.name}`}
+                    onClick={() => {
+                      if (!occurrence.payment) return;
+                      setDocPayment({
+                        id: occurrence.payment.id,
+                        billId: occurrence.bill.id,
+                        title: occurrence.bill.name,
+                        sub: `${formatDate(occurrence.dueDate, state.settings.dateFormat)} · ${formatMoney(occurrence.payment.amount, occurrence.bill.currency, { hide })}`,
+                      });
+                      setDocDraft([]);
+                    }}
+                  >
+                    <Paperclip size={15} />
+                  </button>
+                  <button
+                    className="icon-btn icon-btn--plain"
                     aria-label="Mark this occurrence unpaid"
                     onClick={() => {
                       if (!occurrence.payment) return;
@@ -243,7 +269,14 @@ export function BillsScreen() {
                 setPayError('');
                 if (!payAccount) { setPayError('Select the account to pay from.'); return; }
                 try {
-                  actions.bill.pay(paying.bill.id, paying.dueKey, { accountId: payAccount, date: payDate, amount: payAmount });
+                  const paymentId = actions.bill.pay(paying.bill.id, paying.dueKey, { accountId: payAccount, date: payDate, amount: payAmount });
+                  if (payAttachments.length) {
+                    commitRecordAttachments(
+                      payAttachments,
+                      [{ type: 'bill-payment', id: paymentId }, { type: 'bill', id: paying.bill.id }],
+                      'receipt',
+                    );
+                  }
                   toast('Bill paid');
                   setPaying(null);
                 } catch (err) {
@@ -267,7 +300,41 @@ export function BillsScreen() {
           </Select>
         </Field>
         <Field label="Payment date"><Input type="date" value={payDate} max={todayISO()} onChange={(e) => setPayDate(e.target.value)} /></Field>
+        <RecordAttachments
+          links={[]}
+          category="receipt"
+          staged={payAttachments}
+          onStagedChange={setPayAttachments}
+          title="Bill receipt"
+        />
         <p className="hint">Paying creates one expense transaction for this occurrence. The same occurrence can never be paid twice.</p>
+      </Sheet>
+
+      <Sheet
+        open={Boolean(docPayment)}
+        onClose={() => setDocPayment(null)}
+        title={docPayment ? `${docPayment.title} receipt` : 'Bill receipt'}
+        subtitle={docPayment?.sub}
+        footer={<Btn variant="soft" onClick={() => setDocPayment(null)}>Done</Btn>}
+      >
+        {docPayment ? (
+          <RecordAttachments
+            links={[{ type: 'bill-payment', id: docPayment.id }]}
+            category="invoice"
+            staged={docDraft}
+            onStagedChange={(files) => {
+              if (files.length) {
+                commitRecordAttachments(
+                  files,
+                  [{ type: 'bill-payment', id: docPayment.id }, { type: 'bill', id: docPayment.billId }],
+                  'invoice',
+                );
+              }
+              setDocDraft([]);
+            }}
+            title="Payment receipt"
+          />
+        ) : null}
       </Sheet>
 
       <Confirm
@@ -306,6 +373,7 @@ function BillSheet({
   const [reminderDays, setReminderDays] = useState(editing?.reminderDays ?? 3);
   const [accountId, setAccountId] = useState(editing?.accountId ?? '');
   const [notes, setNotes] = useState(editing?.notes ?? '');
+  const [attachments, setAttachments] = useState<FilePayload[]>([]);
   const [error, setError] = useState('');
   const accounts = state.accounts.filter((a) => !a.archived && a.currency === currency);
 
@@ -318,8 +386,12 @@ function BillSheet({
         name: name.trim(), amount, currency, category, dueDate, frequency,
         reminderDays, accountId: accountId || undefined, notes: notes.trim() || undefined,
       };
+      let savedId = editing?.id ?? '';
       if (editing) actions.bill.update(editing.id, payload);
-      else actions.bill.add(payload);
+      else savedId = actions.bill.add(payload);
+      if (attachments.length) {
+        commitRecordAttachments(attachments, [{ type: 'bill', id: savedId }], 'invoice');
+      }
       toast(editing ? 'Bill updated' : 'Bill added');
       onClose();
     } catch (err) {
@@ -365,6 +437,13 @@ function BillSheet({
         </Field>
       </div>
       <Field label="Notes"><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" /></Field>
+      <RecordAttachments
+        links={editing ? [{ type: 'bill', id: editing.id }] : []}
+        category="invoice"
+        staged={attachments}
+        onStagedChange={setAttachments}
+        title="Bill or subscription documents"
+      />
       {editing ? (
         <Btn variant="ghost" icon={<Trash2 size={16} />} onClick={() => onDelete(editing)}>Delete bill</Btn>
       ) : null}
@@ -378,7 +457,7 @@ function BillSheet({
 type CalEvent = {
   key: string;
   date: string;
-  kind: 'salary' | 'emi' | 'bill' | 'goal';
+  kind: 'salary' | 'emi' | 'bill' | 'goal' | 'reminder';
   title: string;
   amount: number;
   currency: string;
@@ -429,6 +508,20 @@ export function CalendarScreen() {
         });
       }
     }
+    for (const loan of state.loans.filter((l) => l.status === 'active' && l.category === 'gold')) {
+      const maturity = loan.promisedDate || addMonthsClamped(loan.startDate, Math.max(1, loan.termMonths));
+      if (maturity < from || maturity > to) continue;
+      list.push({
+        key: `gold-maturity:${loan.id}:${maturity}`,
+        date: maturity,
+        kind: 'emi',
+        title: `${loan.name} gold redemption`,
+        amount: loan.principal,
+        currency: loan.currency,
+        link: `#/loans/${loan.id}`,
+        status: maturity < today ? 'overdue' : 'upcoming',
+      });
+    }
     for (const occurrence of billOccurrenceList(state, from, to, today)) {
       if (occurrence.paid) continue;
       list.push({
@@ -441,6 +534,20 @@ export function CalendarScreen() {
         link: '#/bills',
         status: occurrence.status,
       });
+    }
+    for (const reminder of state.reminders) {
+      for (const date of reminderOccurrencesInMonth(reminder, monthISO)) {
+        list.push({
+          key: `reminder:${reminder.id}:${date}`,
+          date,
+          kind: 'reminder',
+          title: reminder.title,
+          amount: reminder.amount ?? 0,
+          currency: reminder.currency ?? state.settings.currency,
+          link: '#/reminders',
+          status: date < today ? 'overdue' : 'upcoming',
+        });
+      }
     }
     for (const goal of state.goals.filter((g) => !g.archived && g.targetDate)) {
       const date = goal.targetDate as string;
@@ -523,6 +630,7 @@ export function CalendarScreen() {
           <span className="legend__item"><i className="dot" style={{ background: 'var(--warn)' }} /> EMI</span>
           <span className="legend__item"><i className="dot" style={{ background: 'var(--danger)' }} /> Bill</span>
           <span className="legend__item"><i className="dot" style={{ background: 'var(--info)' }} /> Savings</span>
+          <span className="legend__item"><i className="dot" style={{ background: 'var(--brand-2)' }} /> Reminder</span>
         </div>
       </Card>
 
@@ -557,14 +665,14 @@ function EventRow({ event }: { event: CalEvent }) {
   return (
     <button className="list-row" onClick={() => navigate(event.link.replace('#', ''))}>
       <span className="list-row__icon">
-        {event.kind === 'salary' ? <CalendarDays size={17} /> : event.kind === 'emi' ? <Receipt size={17} /> : <CalendarDays size={17} />}
+        {event.kind === 'salary' ? <CalendarDays size={17} /> : event.kind === 'emi' ? <Receipt size={17} /> : event.kind === 'reminder' ? <Bell size={17} /> : <CalendarDays size={17} />}
       </span>
       <span className="list-row__text">
         <span className="list-row__title">{event.title}</span>
         <span className="list-row__sub">{formatDate(event.date, state.settings.dateFormat)} · {event.kind}</span>
       </span>
       <span className="list-row__trail" style={{ flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
-        <span className="num small">{formatMoney(event.amount, event.currency, { hide })}</span>
+        {event.amount > 0 ? <span className="num small">{formatMoney(event.amount, event.currency, { hide })}</span> : null}
         {event.status === 'overdue' ? <StatusPill status="overdue" /> : null}
       </span>
     </button>

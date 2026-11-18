@@ -13,6 +13,7 @@ import type {
   Job,
   Loan,
   LoanCategory,
+  LoanFrequency,
   SalaryAdjustments,
   SalaryRecord,
   Txn,
@@ -265,11 +266,32 @@ export function isFlexibleLoan(loan: Loan): boolean {
  * - 'interest-only' (gold pawning) charges interest monthly and settles the
  *   pledged principal with the final installment.
  */
+export function loanFrequency(loan: Loan): LoanFrequency {
+  return loan.frequency ?? 'monthly';
+}
+
+export function loanFrequencyLabel(frequency: LoanFrequency): string {
+  return {
+    monthly: 'Monthly',
+    quarterly: 'Quarterly',
+    annual: 'Annual',
+    'end-of-term': 'End of term',
+  }[frequency];
+}
+
 export function generateSchedule(loan: Loan): Emi[] {
   const n = Math.max(1, Math.round(loan.termMonths));
   const P = Math.max(0, Math.round(loan.principal));
   const annual = loan.annualRate;
   const mode = loanInterestMode(loan);
+  const frequency = loanFrequency(loan);
+  const stepMonths = frequency === 'quarterly' ? 3 : frequency === 'annual' ? 12 : frequency === 'end-of-term' ? n : 1;
+  const periods = Math.max(1, Math.ceil(n / stepMonths));
+  // Monthly schedules retain their historical due-date convention (the first
+  // row falls on the start date). Other cadences pay at the end of each period.
+  const dueDateAt = (index: number) =>
+    addMonthsClamped(loan.startDate, Math.min(frequency === 'monthly' ? index : (index + 1) * stepMonths, n));
+  const simpleInterest = loan.method === 'flat' || frequency === 'end-of-term';
 
   if (mode === 'none') {
     const promised =
@@ -309,22 +331,19 @@ export function generateSchedule(loan: Loan): Emi[] {
   }
 
   const rows: Emi[] = [];
-  let balance = P;
   let remainingPrincipal = P;
-  let remainingInterest =
-    loan.method === 'flat' ? Math.round((P * annual * n) / 1200) : 0;
 
-  if (loan.method === 'flat') {
-    const principalParts = apportion(P, n);
-    const interestParts = apportion(remainingInterest, n);
-    for (let i = 0; i < n; i += 1) {
+  if (simpleInterest) {
+    const principalParts = apportion(P, periods);
+    const interestParts = apportion(Math.round((P * annual * n) / 1200), periods);
+    for (let i = 0; i < periods; i += 1) {
       const principalDue = principalParts[i];
       const interestDue = interestParts[i];
       rows.push({
         id: `${loan.id}:emi:${i + 1}`,
         loanId: loan.id,
         index: i + 1,
-        dueDate: addMonthsClamped(loan.startDate, i),
+        dueDate: dueDateAt(i),
         principalDue,
         interestDue,
         totalDue: principalDue + interestDue,
@@ -333,35 +352,27 @@ export function generateSchedule(loan: Loan): Emi[] {
     return rows;
   }
 
-  const monthlyRate = annual / 100 / 12;
+  const periodicRate = (annual / 100) * (stepMonths / 12);
   const emi =
-    monthlyRate === 0
-      ? Math.round(P / n)
-      : Math.round((P * monthlyRate) / (1 - Math.pow(1 + monthlyRate, -n)));
+    periodicRate === 0
+      ? Math.round(P / periods)
+      : Math.round((P * periodicRate) / (1 - Math.pow(1 + periodicRate, -periods)));
 
-  for (let i = 0; i < n; i += 1) {
-    const interestDue = Math.round(balance * monthlyRate);
-    let principalDue: number;
-    if (i === n - 1) {
-      principalDue = remainingPrincipal;
-    } else {
-      principalDue = Math.max(0, Math.min(remainingPrincipal, emi - interestDue));
-    }
-    if (i === n - 1) {
-      principalDue = remainingPrincipal;
-    }
+  for (let i = 0; i < periods; i += 1) {
+    const interestDue = Math.round(remainingPrincipal * periodicRate);
+    const principalDue = i === periods - 1
+      ? remainingPrincipal
+      : Math.max(0, Math.min(remainingPrincipal, emi - interestDue));
     remainingPrincipal -= principalDue;
-    balance -= principalDue;
     rows.push({
       id: `${loan.id}:emi:${i + 1}`,
       loanId: loan.id,
       index: i + 1,
-      dueDate: addMonthsClamped(loan.startDate, i),
+      dueDate: dueDateAt(i),
       principalDue,
       interestDue,
       totalDue: principalDue + interestDue,
     });
-    remainingInterest -= interestDue;
   }
   return rows;
 }
@@ -397,20 +408,33 @@ export function emiStatus(
  * Split a payment against an EMI. Interest is settled first, then principal;
  * overpayment beyond the remaining EMI amount is rejected.
  */
+export type PaymentAllocation = 'auto' | 'principal' | 'interest';
+
 export function splitEmiPayment(
   emi: Emi,
   payments: EmiPayment[],
   amount: number,
+  allocation: PaymentAllocation = 'auto',
 ): { principal: number; interest: number; fees: number } | { error: string } {
   const paid = emiPaid(payments, emi.id);
   const remainingTotal = emi.totalDue - paid.amount;
   if (remainingTotal <= 0) return { error: 'This EMI is already fully paid.' };
   if (amount <= 0) return { error: 'Enter an amount greater than zero.' };
+  const interestRemaining = Math.max(0, emi.interestDue - paid.interest);
+  const principalRemaining = Math.max(0, emi.principalDue - paid.principal);
+  if (allocation === 'principal') {
+    if (principalRemaining <= 0) return { error: 'This instalment has no principal left to pay.' };
+    if (amount > principalRemaining) return { error: `Principal-only amount exceeds the remaining principal of ${principalRemaining}.` };
+    return { principal: amount, interest: 0, fees: 0 };
+  }
+  if (allocation === 'interest') {
+    if (interestRemaining <= 0) return { error: 'This instalment has no interest left to pay.' };
+    if (amount > interestRemaining) return { error: `Interest-only amount exceeds the remaining interest of ${interestRemaining}.` };
+    return { principal: 0, interest: amount, fees: 0 };
+  }
   if (amount > remainingTotal) {
     return { error: `Amount exceeds the remaining balance of this EMI.` };
   }
-  const interestRemaining = Math.max(0, emi.interestDue - paid.interest);
-  const principalRemaining = Math.max(0, emi.principalDue - paid.principal);
   const interest = Math.min(amount, Math.min(interestRemaining, remainingTotal));
   const principal = Math.min(principalRemaining, amount - interest);
   const leftover = amount - interest - principal;
@@ -423,6 +447,16 @@ export function loanOutstanding(loan: Loan, payments: EmiPayment[]): number {
     const paid = emiPaid(payments, emi.id);
     return total + Math.max(0, emi.principalDue - paid.principal);
   }, 0);
+}
+
+/** Every unpaid amount on the existing schedule, shared by preview and action. */
+export function loanSettlementRows(
+  loan: Loan,
+  payments: EmiPayment[],
+): { emi: Emi; remaining: number }[] {
+  return generateSchedule(loan)
+    .map((emi) => ({ emi, remaining: emi.totalDue - emiPaid(payments, emi.id).amount }))
+    .filter((row) => row.remaining > 0);
 }
 
 export function loanFeesPaid(loan: Loan, payments: EmiPayment[]): number {
@@ -849,7 +883,7 @@ export function goalProjection(goal: {
 
 export interface UpcomingItem {
   key: string;
-  kind: 'salary' | 'emi' | 'bill';
+  kind: 'salary' | 'emi' | 'bill' | 'reminder';
   title: string;
   subtitle: string;
   dueDate: string;

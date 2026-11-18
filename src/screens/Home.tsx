@@ -12,7 +12,6 @@ import {
   EyeOff,
   Landmark,
   LayoutGrid,
-  Plus,
   Receipt,
   Search,
   Sparkles,
@@ -41,7 +40,8 @@ import {
   upcomingItems,
 } from '../lib/calc';
 import { formatMoney, percent } from '../lib/money';
-import { buildNotifications } from '../lib/select';
+import { visibleNotifications } from '../lib/select';
+import { nextReminderDate, reminderCategoryLabel } from '../lib/reminders';
 import { DEFAULT_DASHBOARD } from '../lib/store';
 import { actions } from '../lib/store';
 import {
@@ -56,8 +56,9 @@ import {
   Field,
   Input,
 } from '../components/ui';
-import { AccountTile, Money, StatusPill, TxnRow } from '../components/bits';
-import { IncomeExpenseBars } from '../components/charts';
+import { Money, StatusPill, TxnRow } from '../components/bits';
+import { AccountCarousel } from '../components/AccountCarousel';
+import { Donut, IncomeExpenseBars } from '../components/charts';
 
 type Period = 'month' | 'week' | 'last' | 'custom';
 
@@ -107,14 +108,37 @@ export default function HomeScreen() {
     () => periodTotals(state, range.from, range.to, currency),
     [state, range.from, range.to, currency],
   );
-  const spend = useMemo(
-    () => categorySpend(state, range.from, range.to, currency).slice(0, 4),
+  const allSpend = useMemo(
+    () => categorySpend(state, range.from, range.to, currency),
     [state, range.from, range.to, currency],
   );
+  const spend = allSpend.slice(0, 4);
   const series = useMemo(() => monthlySeries(state, currency, 6), [state, currency]);
 
   const activeAccounts = state.accounts.filter((a) => !a.archived);
-  const upcoming = useMemo(() => upcomingItems(state).slice(0, 4), [state]);
+  const upcoming = useMemo(() => {
+    const reminders = state.reminders
+      .filter((reminder) => reminder.active)
+      .map((reminder) => {
+        const date = nextReminderDate(reminder);
+        if (!date || date > addDays(today, 45)) return null;
+        return {
+          key: `reminder:${reminder.id}`,
+          kind: 'reminder' as const,
+          title: reminder.title,
+          subtitle: reminderCategoryLabel(reminder.category),
+          dueDate: date,
+          amount: reminder.amount ?? 0,
+          currency: reminder.currency ?? currency,
+          status: date < today ? 'overdue' : 'upcoming',
+          link: '#/reminders',
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
+    return [...upcomingItems(state), ...reminders]
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+      .slice(0, 4);
+  }, [state, today, currency]);
   const nextSalary = useMemo(() => upcoming.find((item) => item.kind === 'salary'), [upcoming]);
   const nextEmi = useMemo(() => upcoming.find((item) => item.kind === 'emi'), [upcoming]);
   const loansOutstanding = useMemo(
@@ -130,15 +154,28 @@ export default function HomeScreen() {
     [state.transactions],
   );
   const budgets = state.budgets.filter((b) => !b.archived && !b.paused).slice(0, 2);
+  const creditCards = activeAccounts.filter((account) => account.kind === 'credit');
+  const budgetWarnings = state.budgets
+    .filter((budget) => !budget.archived && !budget.paused)
+    .map((budget) => ({ budget, status: budgetStatus(budgetSpent(state, budget, today), budget) }))
+    .filter((row) => row.status === 'warning' || row.status === 'over');
+  const largestExpense = useMemo(
+    () => state.transactions
+      .filter((txn) => txn.kind === 'expense' && txn.currency === currency && txn.date >= range.from && txn.date <= range.to)
+      .reduce<(typeof state.transactions)[number] | null>((largest, txn) => (!largest || txn.amount > largest.amount ? txn : largest), null),
+    [state.transactions, currency, range.from, range.to],
+  );
   const goals = [...state.goals.filter((g) => !g.archived)]
     .sort((a, b) => percent(goalBalance(b), b.target || 1) - percent(goalBalance(a), a.target || 1))
     .slice(0, 2);
-  const unread = buildNotifications(state).filter((n) => !state.readNotifKeys.includes(n.key)).length;
+  const unread = visibleNotifications(state).filter((n) => !state.readNotifKeys.includes(n.key)).length;
   const avatar = profile.avatarId ? state.media[profile.avatarId]?.dataUrl : undefined;
   const firstName = profile.name.trim().split(' ')[0];
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-  const order = settings.dashboard.order.length ? settings.dashboard.order : DEFAULT_DASHBOARD;
+  const savedOrder = settings.dashboard.order.length ? settings.dashboard.order : DEFAULT_DASHBOARD;
+  // Append widgets added in later releases without disturbing a saved layout.
+  const order = [...savedOrder, ...DEFAULT_DASHBOARD.filter((key) => !savedOrder.includes(key))];
   const hidden = settings.dashboard.hidden;
   const savedShare = totals.income > 0 ? Math.round(totals.savingsRate) : null;
 
@@ -277,22 +314,12 @@ export default function HomeScreen() {
           }
         />
         {activeAccounts.length ? (
-          <div className="account-scroll">
-            {activeAccounts.map((account, index) => (
-              <AccountTile
-                key={account.id}
-                account={account}
-                balance={balances.get(account.id) ?? 0}
-                index={index}
-                hide={hide}
-                onClick={() => navigate(`/money/account/${account.id}`)}
-              />
-            ))}
-            <button className="account-card account-card--add" onClick={() => navigate('/money/account/new')}>
-              <Plus size={20} />
-              Add account
-            </button>
-          </div>
+          <AccountCarousel
+            accounts={activeAccounts}
+            balances={balances}
+            hide={hide}
+            onAdd={() => navigate('/money/account/new')}
+          />
         ) : (
           <Card>
             <Empty
@@ -321,7 +348,7 @@ export default function HomeScreen() {
             upcoming.map((item) => (
               <button key={item.key} className="list-row" onClick={() => navigate(item.link)}>
                 <span className="list-row__icon">
-                  {item.kind === 'salary' ? <Briefcase size={17} /> : item.kind === 'emi' ? <CreditCard size={17} /> : <Receipt size={17} />}
+                  {item.kind === 'salary' ? <Briefcase size={17} /> : item.kind === 'emi' ? <CreditCard size={17} /> : item.kind === 'reminder' ? <Bell size={17} /> : <Receipt size={17} />}
                 </span>
                 <span className="list-row__text">
                   <span className="list-row__title">{item.title}</span>
@@ -330,7 +357,7 @@ export default function HomeScreen() {
                   </span>
                 </span>
                 <span className="list-row__trail" style={{ flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-                  <Money amount={item.amount} currency={item.currency} hide={hide} />
+                  {item.amount > 0 ? <Money amount={item.amount} currency={item.currency} hide={hide} /> : null}
                   <StatusPill status={item.status} />
                 </span>
               </button>
@@ -403,6 +430,132 @@ export default function HomeScreen() {
           {!goals.length && !budgets.length ? (
             <button className="link-btn" onClick={() => navigate('/budgets')}>Set a monthly budget</button>
           ) : null}
+        </Card>
+      </section>
+    ),
+
+    spending: (
+      <section key="spending">
+        <SectionHead
+          title="Spending breakdown"
+          action={
+            <button className="link-btn" onClick={() => navigate('/insights')}>
+              Insights <ChevronRight size={14} />
+            </button>
+          }
+        />
+        <Card>
+          {allSpend.length ? (
+            <div className="spending-split">
+              <Donut
+                slices={allSpend.slice(0, 6).map((row, index) => ({
+                  label: row.category,
+                  value: row.amount,
+                  color: ['#0e9f6e', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6'][index] ?? '#64748b',
+                }))}
+                total={totals.expense}
+                currency={currency}
+                hide={hide}
+              />
+              <div className="spending-legend">
+                {allSpend.slice(0, 6).map((row, index) => (
+                  <div className="spending-legend__row" key={row.category}>
+                    <span className="dot" style={{ background: ['#0e9f6e', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6'][index] ?? '#64748b' }} />
+                    <span className="spending-legend__label">{row.category}</span>
+                    <strong>{totals.expense > 0 ? `${Math.round((row.amount / totals.expense) * 100)}%` : '0%'}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <Empty icon={<Receipt size={20} />} title="No spending yet" body="Expense categories will appear here for the selected period." />
+          )}
+        </Card>
+      </section>
+    ),
+
+    cards: (
+      <section key="cards">
+        <SectionHead
+          title="Credit cards"
+          action={
+            <button className="link-btn" onClick={() => navigate('/money/account/new?kind=credit')}>
+              Add card <ChevronRight size={14} />
+            </button>
+          }
+        />
+        <Card>
+          {creditCards.length ? creditCards.map((card) => {
+            const limit = card.creditLimit ?? 0;
+            const available = card.availableCredit ?? 0;
+            const used = Math.max(0, limit - available);
+            const utilization = limit > 0 ? (used / limit) * 100 : 0;
+            return (
+              <button key={card.id} className="card-monitor" onClick={() => navigate(`/money/account/${card.id}`)}>
+                <span className="spread">
+                  <span className="hstack"><CreditCard size={16} /><strong>{card.name}</strong></span>
+                  <span className={`tiny ${utilization >= 80 ? 'text-danger' : 'muted'}`}>{Math.round(utilization)}% used</span>
+                </span>
+                <Progress
+                  value={used}
+                  max={limit || 1}
+                  tone={utilization >= 80 ? 'danger' : utilization >= 60 ? 'warn' : 'brand'}
+                  label={`${card.name} credit used`}
+                />
+                <span className="tiny muted">
+                  {formatMoney(available, card.currency, { hide })} available · {formatMoney(limit, card.currency, { hide })} limit
+                  {card.paymentDueDate ? ` · due ${formatDate(card.paymentDueDate, settings.dateFormat)}` : ''}
+                </span>
+              </button>
+            );
+          }) : (
+            <Empty
+              icon={<CreditCard size={20} />}
+              title="No credit cards tracked"
+              body="Add a card to monitor limits, usage and payment dates."
+              action={<Btn size="sm" variant="soft" onClick={() => navigate('/money/account/new?kind=credit')}>Add credit card</Btn>}
+            />
+          )}
+        </Card>
+      </section>
+    ),
+
+    insights: (
+      <section key="insights">
+        <SectionHead title="Smart insights" action={<span className="tiny muted">{range.label}</span>} />
+        <Card>
+          <div className="insight-list">
+            {totals.income > 0 ? (
+              <div className="insight-row">
+                <span className="insight-row__icon"><TrendingUp size={15} /></span>
+                <span>{totals.savingsRate >= 20 ? `You kept ${Math.round(totals.savingsRate)}% of this period’s income.` : `Spending used ${Math.round(100 - totals.savingsRate)}% of this period’s income.`}</span>
+              </div>
+            ) : null}
+            {allSpend[0] ? (
+              <div className="insight-row">
+                <span className="insight-row__icon"><Receipt size={15} /></span>
+                <span><strong>{allSpend[0].category}</strong> is your largest category at {formatMoney(allSpend[0].amount, currency, { hide, compact: true })}.</span>
+              </div>
+            ) : null}
+            {largestExpense ? (
+              <div className="insight-row">
+                <span className="insight-row__icon"><ArrowUpRight size={15} /></span>
+                <span>Largest expense: {largestExpense.merchant ?? largestExpense.category ?? 'Expense'} at {formatMoney(largestExpense.amount, currency, { hide, compact: true })}.</span>
+              </div>
+            ) : null}
+            {budgetWarnings[0] ? (
+              <div className="insight-row insight-row--warn">
+                <span className="insight-row__icon"><Target size={15} /></span>
+                <span><strong>{budgetWarnings[0].budget.name}</strong> is {budgetWarnings[0].status === 'over' ? 'over budget' : 'close to its limit'}.</span>
+              </div>
+            ) : null}
+            {!totals.income && !allSpend.length ? (
+              <div className="insight-row">
+                <span className="insight-row__icon"><Sparkles size={15} /></span>
+                <span>Record income and expenses to unlock personalised insights.</span>
+              </div>
+            ) : null}
+          </div>
         </Card>
       </section>
     ),

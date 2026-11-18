@@ -25,7 +25,7 @@ import {
   setAppLocked,
   type AppLockSettings,
 } from './lib/appLock';
-import { buildNotifications } from './lib/select';
+import { visibleNotifications } from './lib/select';
 import { actions, store } from './lib/store';
 import { readDeviceMessages } from './lib/smsBridge';
 import { syncDeviceReminders } from './lib/nativeNotify';
@@ -46,6 +46,7 @@ import { LoansScreen, LoanForm, LoanDetail } from './screens/Loans';
 import MoreScreen from './screens/More';
 import { BudgetsScreen, SavingsScreen, InvestmentsScreen } from './screens/Planning';
 import { BillsScreen, CalendarScreen } from './screens/BillsCal';
+import { RemindersScreen } from './screens/Reminders';
 import { VaultScreen, DocumentViewer } from './screens/Vault';
 import InsightsScreen from './screens/Insights';
 import NetWorthScreen from './screens/NetWorth';
@@ -71,6 +72,7 @@ const QUICK_ACTIONS = [
   { label: 'Add account', hint: 'Bank, cash or wallet', icon: <Landmark size={18} />, to: '/money/account/new' },
   { label: 'Add loan', hint: 'Track a new borrowing', icon: <Landmark size={18} />, to: '/loans/new' },
   { label: 'Add bill', hint: 'Recurring obligation', icon: <Receipt size={18} />, to: '/bills' },
+  { label: 'Create reminder', hint: 'Bill, card or custom alert', icon: <Bell size={18} />, to: '/reminders' },
 ];
 
 function Splash({ done }: { done: boolean }) {
@@ -119,7 +121,7 @@ export default function App() {
   const activeTab = TABS.some((t) => t.key === tab) ? tab : 'more';
   const isRoot = segments.length === 1;
   const [s0, s1] = segments;
-  const notificationCount = buildNotifications(state).filter(
+  const notificationCount = visibleNotifications(state).filter(
     (n) => !state.readNotifKeys.includes(n.key),
   ).length;
 
@@ -386,6 +388,9 @@ export default function App() {
       break;
     case 'calendar':
       content = <CalendarScreen />;
+      break;
+    case 'reminders':
+      content = <RemindersScreen />;
       break;
     case 'vault':
       content = s1 ? <DocumentViewer docId={s1} /> : <VaultScreen />;

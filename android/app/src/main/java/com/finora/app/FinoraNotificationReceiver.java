@@ -26,15 +26,27 @@ public class FinoraNotificationReceiver extends BroadcastReceiver {
     public static final String EXTRA_ID = "id";
     public static final String EXTRA_TITLE = "title";
     public static final String EXTRA_BODY = "body";
+    public static final String EXTRA_REPEAT = "repeatMillis";
 
     @Override
     public void onReceive(Context context, Intent intent) {
         if (!ACTION_SHOW.equals(intent.getAction())) return;
-        show(
-                context,
-                intent.getIntExtra(EXTRA_ID, 1),
-                intent.getStringExtra(EXTRA_TITLE),
-                intent.getStringExtra(EXTRA_BODY));
+        int id = intent.getIntExtra(EXTRA_ID, 1);
+        String title = intent.getStringExtra(EXTRA_TITLE);
+        String body = intent.getStringExtra(EXTRA_BODY);
+        long repeat = intent.getLongExtra(EXTRA_REPEAT, 0L);
+        show(context, id, title, body);
+        // Recurring custom reminders continue while the app is closed because
+        // the broadcast receiver queues the next alarm itself. A negative value
+        // means a calendar month, so 31 Jan becomes 28/29 Feb rather than a
+        // fixed 30-day interval.
+        if (repeat < 0L) {
+            java.util.Calendar next = java.util.Calendar.getInstance();
+            next.add(java.util.Calendar.MONTH, 1);
+            schedule(context, id, title, body, next.getTimeInMillis(), repeat);
+        } else if (repeat > 0L) {
+            schedule(context, id, title, body, System.currentTimeMillis() + repeat, repeat);
+        }
     }
 
     public static void ensureChannel(Context context) {
@@ -86,6 +98,10 @@ public class FinoraNotificationReceiver extends BroadcastReceiver {
     }
 
     public static void schedule(Context context, int id, String title, String body, long triggerAtMillis) {
+        schedule(context, id, title, body, triggerAtMillis, 0L);
+    }
+
+    public static void schedule(Context context, int id, String title, String body, long triggerAtMillis, long repeatMillis) {
         AlarmManager manager = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
         if (manager == null) return;
 
@@ -94,6 +110,7 @@ public class FinoraNotificationReceiver extends BroadcastReceiver {
         intent.putExtra(EXTRA_ID, id);
         intent.putExtra(EXTRA_TITLE, title);
         intent.putExtra(EXTRA_BODY, body);
+        intent.putExtra(EXTRA_REPEAT, repeatMillis);
         PendingIntent pending = PendingIntent.getBroadcast(
                 context,
                 id,

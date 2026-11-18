@@ -32,6 +32,7 @@ import { EXPENSE_CATEGORIES } from '../lib/categories';
 import { formatDate as fmt, addMonthsClamped } from '../lib/calc';
 import { compressImage, type FilePayload } from '../lib/files';
 import { toast } from '../lib/toast';
+import { commitRecordAttachments, RecordAttachments } from '../components/RecordAttachments';
 import {
   Btn,
   Card,
@@ -613,6 +614,7 @@ function ContributionSheet({
   const [amount, setAmount] = useState(0);
   const [accountId, setAccountId] = useState('');
   const [date, setDate] = useState(todayISO());
+  const [attachments, setAttachments] = useState<FilePayload[]>([]);
   const [error, setError] = useState('');
   const [key, setKey] = useState(0);
 
@@ -635,7 +637,14 @@ function ContributionSheet({
             onClick={() => {
               setError('');
               try {
-                actions.goal.contribute(goal.id, { amount, accountId: accountId || undefined, date, direction });
+                const contributionId = actions.goal.contribute(goal.id, { amount, accountId: accountId || undefined, date, direction });
+                if (attachments.length) {
+                  commitRecordAttachments(
+                    attachments,
+                    [{ type: 'contribution', id: contributionId }, { type: 'goal', id: goal.id }],
+                    'receipt',
+                  );
+                }
                 toast(direction === 'in' ? 'Contribution recorded' : 'Withdrawal recorded');
                 setAmount(0);
                 setKey((k) => k + 1);
@@ -661,6 +670,13 @@ function ContributionSheet({
       <Field label="Date">
         <Input type="date" value={date} max={todayISO()} onChange={(e) => setDate(e.target.value)} />
       </Field>
+      <RecordAttachments
+        links={[]}
+        category="receipt"
+        staged={attachments}
+        onStagedChange={setAttachments}
+        title="Contribution receipt"
+      />
       {!accountId ? <p className="tiny muted">Without an account this only updates the goal balance and leaves cash unchanged.</p> : null}
     </Sheet>
   );

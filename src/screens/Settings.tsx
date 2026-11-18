@@ -61,7 +61,10 @@ const SECTION_LABELS: Record<string, string> = {
   accounts: 'Accounts',
   upcoming: 'Upcoming obligations',
   progress: 'Savings and budgets',
+  spending: 'Spending breakdown',
   recent: 'Recent activity',
+  cards: 'Credit card monitor',
+  insights: 'Smart insights',
 };
 
 const CLEAR_PHRASE = 'CLEAR ALL';
@@ -115,7 +118,7 @@ function ClearDataSheet({ open, onClose }: { open: boolean; onClose: () => void 
       }
     >
       <div className="confirm-body">
-        <p><strong>Removed:</strong> accounts, transactions, transfers, salary jobs and records, loans, EMI payments, budgets, savings goals, investments, bills, bill payments, documents, receipts, account images, bank-message drafts and notification read state.</p>
+        <p><strong>Removed:</strong> accounts, transactions, transfers, salary jobs and records, loans, EMI payments, budgets, savings goals, investments, bills, bill payments, reminders, documents, receipts, account images, bank-message drafts and notification read state.</p>
         <p><strong>Retained:</strong> your name, contact details, profile photo, theme, currency, date and number formats, notification preferences and dashboard layout.</p>
         <p>Only records stored on this device are affected. These are {state.accounts.length} accounts, {state.transactions.length} transactions and {state.documents.length} documents right now.</p>
       </div>
@@ -133,7 +136,8 @@ function ClearDataSheet({ open, onClose }: { open: boolean; onClose: () => void 
 export function SettingsScreen() {
   const state = useApp();
   const [clearOpen, setClearOpen] = useState(false);
-  const order = state.settings.dashboard.order.length ? state.settings.dashboard.order : DEFAULT_DASHBOARD;
+  const savedOrder = state.settings.dashboard.order.length ? state.settings.dashboard.order : DEFAULT_DASHBOARD;
+  const order = [...savedOrder, ...DEFAULT_DASHBOARD.filter((key) => !savedOrder.includes(key))];
   const hidden = state.settings.dashboard.hidden;
 
   const move = (index: number, delta: number) => {
@@ -303,7 +307,7 @@ export function SettingsScreen() {
 
       <Card>
         <h2 className="card-title">About Finora</h2>
-        <p className="small muted">Version 1.1.0 · local-first personal finance</p>
+        <p className="small muted">Version 1.3.0 · local-first personal finance</p>
         <p className="tiny muted">Your money, clearly managed.</p>
         <Btn variant="soft" size="sm" onClick={() => navigate('/help')}>Help and support</Btn>
       </Card>
@@ -321,7 +325,7 @@ export function SettingsScreen() {
           Android build are all made with care by Risfath Ahamed.
         </p>
         <div className="developer-card__meta">
-          <span>Version 1.1.0</span>
+          <span>Version 1.3.0</span>
           <span>Local-first</span>
           <span>Android · Web</span>
         </div>

@@ -1,17 +1,22 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   Bell,
+  CalendarClock,
   Check,
+  CheckCheck,
   ChevronRight,
   MessageSquare,
+  Plus,
+  RotateCcw,
   Search,
   ShieldAlert,
   Smartphone,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import { useApp, navigate } from '../lib/hooks';
 import { formatDate, todayISO } from '../lib/calc';
-import { buildNotifications, globalSearch } from '../lib/select';
+import { globalSearch, visibleNotifications } from '../lib/select';
 import { actions } from '../lib/store';
 import { ALL_CATEGORIES, INCOME_CATEGORIES, EXPENSE_CATEGORIES } from '../lib/categories';
 import { iconFor } from '../lib/notificationIcon';
@@ -19,6 +24,7 @@ import { toast } from '../lib/toast';
 import {
   Btn,
   Card,
+  Confirm,
   Empty,
   Field,
   Input,
@@ -364,13 +370,32 @@ export function SmsScreen() {
 
 export function NotificationsScreen() {
   const state = useApp();
-  const [onlyUnread, setOnlyUnread] = useState(false);
-  const notifications = buildNotifications(state);
+  const [filter, setFilter] = useState<'all' | 'unread' | 'money' | 'reminders' | 'system'>('all');
+  const [term, setTerm] = useState('');
+  const [clearOpen, setClearOpen] = useState(false);
+  const notifications = visibleNotifications(state);
   const unread = notifications.filter((n) => !state.readNotifKeys.includes(n.key));
-  const list = onlyUnread ? unread : notifications;
+  const list = notifications.filter((item) => {
+    const read = state.readNotifKeys.includes(item.key);
+    if (filter === 'unread' && read) return false;
+    if (filter === 'money' && !['salary', 'emi', 'bill', 'budget', 'savings'].includes(item.kind)) return false;
+    if (filter === 'reminders' && item.kind !== 'reminder') return false;
+    if (filter === 'system' && item.kind !== 'sms') return false;
+    const q = term.trim().toLowerCase();
+    return !q || `${item.title} ${item.body}`.toLowerCase().includes(q);
+  });
 
   return (
-    <Screen title="Notifications" subtitle={`${unread.length} unread`} back>
+    <Screen
+      title="Notifications"
+      subtitle={`${unread.length} unread · ${notifications.length} total`}
+      back
+      actions={
+        <Btn size="sm" variant="soft" icon={<Plus size={16} />} onClick={() => navigate('/reminders')}>
+          Reminder
+        </Btn>
+      }
+    >
       {hasDeviceNotifications() ? (
         <Card>
           <div className="spread">
@@ -381,7 +406,7 @@ export function NotificationsScreen() {
             <Bell size={18} className="muted" />
           </div>
           <p className="tiny muted">
-            Salary, EMI and bill reminders are queued on this device and stay visible on the lock screen.
+            Bill, EMI, salary and custom reminder alerts are queued on this device and stay visible on the lock screen.
           </p>
           <Btn
             variant="soft"
@@ -401,57 +426,117 @@ export function NotificationsScreen() {
           </Btn>
         </Card>
       ) : null}
+
+      <Field label="Search notifications">
+        <Input value={term} onChange={(e) => setTerm(e.target.value)} placeholder="Search title or details" inputMode="search" />
+      </Field>
+
       <div className="chip-row">
-        <button className={`chip ${!onlyUnread ? 'chip--active' : ''}`} onClick={() => setOnlyUnread(false)}>All</button>
-        <button className={`chip ${onlyUnread ? 'chip--active' : ''}`} onClick={() => setOnlyUnread(true)}>Unread</button>
-        <button className="chip" onClick={() => navigate('/settings')}>Preferences</button>
+        {[
+          { value: 'all', label: 'All' },
+          { value: 'unread', label: `Unread${unread.length ? ` (${unread.length})` : ''}` },
+          { value: 'money', label: 'Money' },
+          { value: 'reminders', label: 'Reminders' },
+          { value: 'system', label: 'System' },
+        ].map((chip) => (
+          <button
+            key={chip.value}
+            className={`chip ${filter === chip.value ? 'chip--active' : ''}`}
+            onClick={() => setFilter(chip.value as typeof filter)}
+          >
+            {chip.label}
+          </button>
+        ))}
       </div>
 
       {unread.length ? (
-        <Btn variant="soft" block onClick={() => { actions.notifications.markAllRead(notifications.map((n) => n.key)); toast('All notifications marked as read'); }}>
+        <Btn variant="soft" block icon={<CheckCheck size={16} />} onClick={() => { actions.notifications.markAllRead(notifications.map((n) => n.key)); toast('All notifications marked as read'); }}>
           Mark all as read
         </Btn>
       ) : null}
 
       <Card className="card--flush">
         {list.length ? (
-          list.map((item) => (
-            <button
-              key={item.key}
-              className="list-row"
-              onClick={() => {
-                actions.notifications.markRead(item.key);
-                navigate(item.link.replace('#', ''));
-              }}
-            >
-              <span className={`list-row__icon ${item.urgency === 'danger' ? 'list-row__icon--danger' : ''}`}>
-                {iconFor(item.kind)}
-              </span>
-              <span className="list-row__text">
-                <span className="list-row__title">
-                  {!state.readNotifKeys.includes(item.key) ? <span className="dot" style={{ background: 'var(--brand)', borderRadius: '50%', marginRight: 6 }} /> : null}
-                  {item.title}
-                </span>
-                <span className="list-row__sub">{item.body}</span>
-              </span>
-              <span className="list-row__trail" style={{ flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
-                <span className="tiny">{formatDate(item.date)}</span>
-                {item.urgency !== 'info' ? <StatusPill status={item.urgency === 'danger' ? 'overdue' : 'due-soon'} /> : null}
-              </span>
-            </button>
-          ))
+          <div className="notif-list">
+            {list.map((item) => {
+              const read = state.readNotifKeys.includes(item.key);
+              return (
+                <div key={item.key} className={`notif-item ${read ? '' : 'notif-item--unread'}`}>
+                  <button
+                    className="notif-item__main"
+                    onClick={() => {
+                      actions.notifications.markRead(item.key);
+                      navigate(item.link.replace('#', ''));
+                    }}
+                  >
+                    <span className={`list-row__icon ${item.urgency === 'danger' ? 'list-row__icon--danger' : ''}`}>
+                      {iconFor(item.kind)}
+                    </span>
+                    <span className="list-row__text">
+                      <span className="list-row__title">{item.title}</span>
+                      <span className="list-row__sub">{item.body}</span>
+                      <span className="notif-item__date">{formatDate(item.date)}</span>
+                    </span>
+                    <span className="list-row__trail">
+                      {item.urgency !== 'info' ? <StatusPill status={item.urgency === 'danger' ? 'overdue' : 'due-soon'} /> : null}
+                    </span>
+                  </button>
+                  <div className="notif-item__actions">
+                    <button
+                      type="button"
+                      className="icon-btn icon-btn--plain"
+                      aria-label={read ? `Mark ${item.title} unread` : `Mark ${item.title} read`}
+                      onClick={() => read ? actions.notifications.markUnread(item.key) : actions.notifications.markRead(item.key)}
+                    >
+                      <Check size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn icon-btn--plain"
+                      aria-label={`Delete ${item.title}`}
+                      onClick={() => { actions.notifications.remove(item.key); toast('Notification removed'); }}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         ) : (
           <Empty
             icon={<Bell size={20} />}
-            title={onlyUnread ? 'You are all caught up' : 'No notifications yet'}
-            body="Salary, EMI, bill and budget reminders appear here as they become relevant."
+            title={term.trim() ? 'No matching notifications' : unread.length ? 'Nothing unread' : 'No notifications here'}
+            body={term.trim() ? 'Try a shorter search or another category.' : 'Salary, EMI, bill, budget and custom reminders appear here as they become relevant.'}
           />
         )}
       </Card>
 
+      <div className="btn-row">
+        <Btn variant="soft" icon={<CalendarClock size={16} />} onClick={() => navigate('/reminders')}>Manage reminders</Btn>
+        {notifications.length ? (
+          <Btn variant="ghost" icon={<Trash2 size={16} />} onClick={() => setClearOpen(true)}>Clear all</Btn>
+        ) : state.deletedNotifKeys.length ? (
+          <Btn variant="ghost" icon={<RotateCcw size={16} />} onClick={() => { actions.notifications.restore(); toast('Cleared notifications restored'); }}>Restore cleared</Btn>
+        ) : null}
+      </div>
+
       <p className="tiny muted">
-        Reminders are generated from your own records and de-duplicated per event. Finora never sends duplicate reminders for the same obligation.
+        Reminders are generated from your own records and de-duplicated per event. Deleted notifications stay hidden until their underlying event changes.
       </p>
+
+      <Confirm
+        open={clearOpen}
+        onClose={() => setClearOpen(false)}
+        title="Clear all notifications?"
+        message="This hides every current notification from the centre. Your financial records and reminders are not deleted."
+        confirmLabel="Clear notifications"
+        onConfirm={() => {
+          actions.notifications.clear(notifications.map((n) => n.key));
+          setClearOpen(false);
+          toast('Notifications cleared');
+        }}
+      />
     </Screen>
   );
 }
@@ -469,7 +554,7 @@ export function SearchScreen() {
   };
 
   return (
-    <Screen title="Search" subtitle="Accounts, transactions, salary, loans, bills and documents" back>
+    <Screen title="Search" subtitle="Accounts, transactions, bills, documents, reminders and notifications" back>
       <form
         onSubmit={(e) => {
           e.preventDefault();

@@ -11,9 +11,24 @@ export type AccountKind = 'bank' | 'cash' | 'wallet' | 'credit' | 'other';
 export interface Account {
   id: ID;
   name: string;
+  /** Account holder / cardholder / wallet holder. */
+  holderName?: string;
   bankName?: string;
   branch?: string;
   kind: AccountKind;
+  /** Bank account type, or a flexible type for Other. */
+  accountType?: string;
+  /** Provider for wallets, cards and other institutions. */
+  provider?: string;
+  walletId?: string;
+  cardType?: string;
+  lastFour?: string;
+  creditLimit?: number;
+  availableCredit?: number;
+  billingDate?: string;
+  paymentDueDate?: string;
+  referenceNumber?: string;
+  /** Bank account number, wallet identifier or legacy masked identifier. */
   identifier?: string;
   currency: string;
   openingBalance: number;
@@ -116,8 +131,18 @@ export type LoanMethod = 'reducing' | 'flat';
 export type LoanStatus = 'active' | 'closed';
 
 /** Loan shape drives which fields the form asks for and how repayment works. */
-export type LoanCategory = 'bank' | 'personal' | 'vehicle' | 'gold' | 'friend' | 'other';
+export type LoanCategory =
+  | 'bank'
+  | 'personal'
+  | 'vehicle'
+  | 'home'
+  | 'business'
+  | 'education'
+  | 'gold'
+  | 'friend'
+  | 'other';
 export type InterestMode = 'reducing' | 'flat' | 'interest-only' | 'none';
+export type LoanFrequency = 'monthly' | 'quarterly' | 'annual' | 'end-of-term';
 
 export interface Loan {
   id: ID;
@@ -147,6 +172,16 @@ export interface Loan {
   goldWeight?: number;
   goldPurity?: number;
   monthlyRate?: number;
+  /** Repayment cadence. Missing means monthly for older records. */
+  frequency?: LoanFrequency;
+  /** Vehicle / property description for secured loans. */
+  assetDescription?: string;
+  /** Bank or dealer reference for the agreement. */
+  loanReference?: string;
+  /** Informational down payment, not part of the borrowed principal. */
+  downPayment?: number;
+  /** Optional insurance or processing charges paid upfront. */
+  insurance?: number;
 }
 
 export interface Emi {
@@ -269,7 +304,18 @@ export type DocCategory =
   | 'other';
 
 export interface DocLink {
-  type: 'account' | 'txn' | 'loan' | 'emi' | 'salary' | 'bill' | 'goal' | 'investment';
+  type:
+    | 'account'
+    | 'txn'
+    | 'loan'
+    | 'emi'
+    | 'salary'
+    | 'salary-payment'
+    | 'bill'
+    | 'bill-payment'
+    | 'goal'
+    | 'contribution'
+    | 'investment';
   id: ID;
 }
 
@@ -282,6 +328,26 @@ export interface VaultDoc {
   category: DocCategory;
   links: DocLink[];
   notes?: string;
+  favorite?: boolean;
+  createdAt: string;
+}
+
+export type ReminderRepeat = 'once' | 'daily' | 'weekly' | 'monthly';
+export type ReminderCategory = 'bill' | 'credit-card' | 'loan' | 'subscription' | 'insurance' | 'rent' | 'savings' | 'custom';
+
+export interface Reminder {
+  id: ID;
+  title: string;
+  description?: string;
+  category: ReminderCategory;
+  amount?: number;
+  currency?: string;
+  accountId?: ID;
+  date: string;
+  time: string;
+  repeat: ReminderRepeat;
+  notify: 'in-app' | 'device';
+  active: boolean;
   createdAt: string;
 }
 
@@ -364,7 +430,9 @@ export interface AppState {
   documents: VaultDoc[];
   media: Record<ID, Media>;
   smsDrafts: SmsDraft[];
+  reminders: Reminder[];
   readNotifKeys: string[];
+  deletedNotifKeys: string[];
   recentSearches: string[];
 }
 
